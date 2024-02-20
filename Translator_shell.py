@@ -2,6 +2,7 @@ from typing import List, Tuple
 from tqdm import tqdm
 import whisper
 from transformers import AutoTokenizer, AutoModel
+import os
 
 def transcribeToList(videoPath:str, model:str, showText:bool=False) -> List[Tuple[Tuple[float, float], str]]:
     _ = print("正在加载Whisper模型：") if showText else None
@@ -9,7 +10,7 @@ def transcribeToList(videoPath:str, model:str, showText:bool=False) -> List[Tupl
     _ = print("加载模型完成") if showText else None
     _ = print("开始转录：") if showText else None
     transcribeResult = model.transcribe(videoPath, verbose=False) if showText else model.transcribe(videoPath)
-    _ = print("转录完成，文本为：") if showText else None
+    _ = print("转录完成") if showText else None
 
     result = []
     for segment in transcribeResult["segments"]:
@@ -34,11 +35,11 @@ def seperateSubtitleSegment(subtitles:List[Tuple[Tuple[float, float], str]], tra
         history.append(userPrompt)
         history.append(assistanceRespond)
         
-    current = subtitles[index][1]
-    forward = "\n"
+    current = '当前字幕： ' + subtitles[index][1]
+    forward = "作为参考的后续字幕（不翻译）\n"
     for forwardIndex in range(index, min(forwardCount + index, len(subtitles))):
         forward += subtitles[forwardIndex][1]
-    return (history, current + forward + "\n这里是一段字幕，现在请你根据我们之前的对话，以及第一行字幕后给你的额外信息来翻译第一行字幕。请注意，只需要翻译第一行即可，后续的几行是提供给你作为上下文参考的。同样的，我们对话历史里已经翻译过的东西也不用再翻译一遍。")
+    return (history, current + forward + "\n翻译当前字幕")
 
 def translateByChatGLM(history:str, prompt:str, model:AutoModel, tokenizer:AutoTokenizer) -> str:
     stop_stream = False
@@ -52,24 +53,63 @@ def translateByChatGLM(history:str, prompt:str, model:AutoModel, tokenizer:AutoT
             break
         else:
             translateResult += response[current_length:]
+            print(response[current_length:], end="")
             current_length = len(response)
+    print("")
     return translateResult
 
-print("正在准备ChatGLM模型：")
-tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm3-6b", trust_remote_code=True)
-model = AutoModel.from_pretrained("THUDM/chatglm3-6b", trust_remote_code=True).cuda()
-model = model.eval()
-print("ChatGLM准备完毕")
-transcribedSubtitles = transcribeToList(videoPath="test.ogg", model="large-v2", showText=True)
-translatedSubtitles = []
-historyCount = 10
-forwardCount = 3
-for index in tqdm(range(len(transcribedSubtitles)), desc="正在执行滑动窗口翻译", position=1):
-    history, prompt = seperateSubtitleSegment(subtitles=transcribedSubtitles, translations=translatedSubtitles, index=index, historyCount=historyCount, forwardCount=forwardCount)
-    translated = translateByChatGLM(history=history, prompt=prompt, model=model, tokenizer=tokenizer)
-    beginTime = transcribedSubtitles[index][0][0]
-    endTime = transcribedSubtitles[index][0][1]
-    original = transcribedSubtitles[index][1]
-    translatedSubtitles.append(((beginTime, endTime),(original, translated)))
-for item in translatedSubtitles:
-    print(item)
+def convertTime(time:float) -> str:
+    hours = int(time // 3600)
+    minutes = int((time % 3600) // 60)
+    seconds = int(time % 60)
+    milliseconds = int((time - int(time)) * 1000)
+
+    return "{:02}:{:02}:{:02},{:03}".format(hours, minutes, seconds, milliseconds)
+
+def writeToFile(content:str, fileName:str):
+    with open(fileName, 'w') as file:
+        file.write(content)
+
+def findVideos(directory):
+    videos = []
+    fileExt = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            if file.split('.')[-1] in fileExt:
+                videos.append(os.path.join(root, file))
+    print(f"找到{len(videos)}个视频文件")
+    return videos
+
+selectedPath = "..."
+for filePath in tqdm(findVideos(selectedPath), desc="正在翻译全部视频"):
+    translate = False
+    fileName = filePath.split('.')[0]
+    transcribedSubtitles = transcribeToList(videoPath=filePath, model="large-v2", showText=True)
+    translatedSubtitles = []
+    historyCount = 10
+    forwardCount = 3
+    if translate:
+        print("正在准备ChatGLM模型：")
+        tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm3-6b", trust_remote_code=True)
+        model = AutoModel.from_pretrained("THUDM/chatglm3-6b", trust_remote_code=True).cuda()
+        model = model.eval()
+        print("ChatGLM准备完毕")
+        for index in tqdm(range(len(transcribedSubtitles)), desc="正在执行滑动窗口翻译", position=1):
+            history, prompt = seperateSubtitleSegment(subtitles=transcribedSubtitles, translations=translatedSubtitles, index=index, historyCount=historyCount, forwardCount=forwardCount)
+            translated = translateByChatGLM(history=history, prompt=prompt, model=model, tokenizer=tokenizer)
+            beginTime = transcribedSubtitles[index][0][0]
+            endTime = transcribedSubtitles[index][0][1]
+            original = transcribedSubtitles[index][1]
+            translatedSubtitles.append(((beginTime, endTime),(original, translated)))
+        for item in translatedSubtitles:
+            print(item)
+    index = 0
+    result = ""
+    for subtitle in transcribedSubtitles:
+        index += 1
+        start = convertTime(subtitle[0][0])
+        end = convertTime(subtitle[0][1])
+        context = subtitle[1]
+        subtitleContent = f"{index}\n{start} --> {end}\n{context}\n\n"
+        result += subtitleContent
+    writeToFile(fileName=f"{selectedPath}/{fileName}.srt", content=result)
