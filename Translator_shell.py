@@ -5,7 +5,7 @@ from transformers import AutoTokenizer, AutoModel
 import os
 
 def transcribeToList(videoPath:str, model:str, showText:bool=False) -> List[Tuple[Tuple[float, float], str]]:
-    _ = print("正在加载Whisper模型：") if showText else None
+    _ = print("正在加载Whisper模型...") if showText else None
     model = whisper.load_model(model)
     _ = print("加载模型完成") if showText else None
     _ = print("开始转录：") if showText else None
@@ -73,7 +73,7 @@ def writeToFile(content:str, fileName:str):
     with open(fileName, 'w', encoding='UTF-8') as file:
         file.write(content)
 
-def findVideos(directory):
+def findVideos(directory:str) -> List:
     videos = []
     fileExt = ['flac', 'm4a', 'mp3', 'mp4', 'mpeg', 'mpga', 'oga', 'ogg', 'wav', 'webm']
     for root, dirs, files in os.walk(directory):
@@ -85,7 +85,7 @@ def findVideos(directory):
 
 batch = False
 batchPath = ""
-videoPath = ""
+videoPath = "test.ogg"
 translate = True
 bothLanguage = True
 if batch:
