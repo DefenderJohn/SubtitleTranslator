@@ -95,7 +95,7 @@ if batch:
         transcribedSubtitles = transcribeToList(videoPath=filePath, model="large", showText=True)
         translatedSubtitles = []
         historyCount = 10
-        forwardCount = 0
+        forwardCount = 1
         if translate:
             print("正在准备ChatGLM模型：")
             tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm3-6b", trust_remote_code=True)
@@ -136,7 +136,7 @@ else:
     transcribedSubtitles = transcribeToList(videoPath=filePath, model="large", showText=True)
     translatedSubtitles = []
     historyCount = 10
-    forwardCount = 0
+    forwardCount = 1
     if translate:
         print("正在准备ChatGLM模型：")
         tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm3-6b", trust_remote_code=True)
