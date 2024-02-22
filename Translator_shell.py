@@ -3,13 +3,14 @@ from tqdm import tqdm
 import whisper
 from transformers import AutoTokenizer, AutoModel
 import os
+import torch
 
-def transcribeToList(videoPath:str, model:str, showText:bool=False) -> List[Tuple[Tuple[float, float], str]]:
+def transcribeToList(videoPath:str, modelInstance:str, showText:bool=False) -> List[Tuple[Tuple[float, float], str]]:
     _ = print("正在加载Whisper模型...") if showText else None
-    model = whisper.load_model(model)
+    modelInstance = whisper.load_model(modelInstance)
     _ = print("加载模型完成") if showText else None
     _ = print("开始转录：") if showText else None
-    transcribeResult = model.transcribe(videoPath, verbose=False) if showText else model.transcribe(videoPath)
+    transcribeResult = modelInstance.transcribe(videoPath, verbose=False) if showText else modelInstance.transcribe(videoPath)
     _ = print("转录完成") if showText else None
 
     result = []
@@ -18,6 +19,8 @@ def transcribeToList(videoPath:str, model:str, showText:bool=False) -> List[Tupl
         startTime:float = segment["start"]
         endTime:float = segment["end"]
         result.append(((startTime, endTime), text))
+    del modelInstance
+    torch.cuda.empty_cache()
     return result
 
 def seperateSubtitleSegment(subtitles:List[Tuple[Tuple[float, float], str]], translations:List[Tuple[Tuple[float, float], Tuple[str,str]]],
@@ -56,9 +59,7 @@ def translateByChatGLM(history:str, prompt:str, model:AutoModel, tokenizer:AutoT
             break
         else:
             translateResult += response[current_length:]
-            #print(response[current_length:], end="")
             current_length = len(response)
-    #print("")
     return translateResult
 
 def convertTime(time:float) -> str:
@@ -85,14 +86,14 @@ def findVideos(directory:str) -> List:
 
 batch = False
 batchPath = ""
-videoPath = "test.ogg"
+videoPath = ""
 translate = True
 bothLanguage = True
 if batch:
     selectedPath = batchPath
     for filePath in tqdm(findVideos(selectedPath), desc="正在翻译全部视频"):
         fileName = filePath.split('.')[0]
-        transcribedSubtitles = transcribeToList(videoPath=filePath, model="large", showText=True)
+        transcribedSubtitles = transcribeToList(videoPath=filePath, modelInstance="large", showText=True)
         translatedSubtitles = []
         historyCount = 10
         forwardCount = 1
@@ -109,6 +110,8 @@ if batch:
                 endTime = transcribedSubtitles[index][0][1]
                 original = transcribedSubtitles[index][1]
                 translatedSubtitles.append(((beginTime, endTime),(original, translated)))
+            del model
+            torch.cuda.empty_cache()
             index = 0
             result = ""
             for subtitle in translatedSubtitles:
@@ -133,7 +136,7 @@ if batch:
 else:
     filePath = videoPath
     fileName = filePath.split('.')[0]
-    transcribedSubtitles = transcribeToList(videoPath=filePath, model="large", showText=True)
+    transcribedSubtitles = transcribeToList(videoPath=filePath, modelInstance="large", showText=True)
     translatedSubtitles = []
     historyCount = 10
     forwardCount = 1
@@ -150,6 +153,8 @@ else:
             endTime = transcribedSubtitles[index][0][1]
             original = transcribedSubtitles[index][1]
             translatedSubtitles.append(((beginTime, endTime),(original, translated)))
+        del model
+        torch.cuda.empty_cache()
         index = 0
         result = ""
         for subtitle in translatedSubtitles:

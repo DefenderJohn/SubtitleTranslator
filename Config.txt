@@ -1,0 +1,46 @@
+# whisper模型的配置，从小到大依次为
+# tiny base small medium large large-v2 large-v3
+WhisperModel = large-v3
+
+# ChatGLM模型的配置，推荐使用chatglm3-6b
+# 如果有必要的话，这里是一些额外的选项
+# chatglm3-6b-32k: 适用于更大的上下文，但是更慢
+# chatglm2-6b和chatglm2-6b-32k，比较旧的模型，不推荐
+ChatGLM_Model = chatglm3-6b
+
+# 控制是否读取单个文件还是读取目录
+# 标为True的时候将下面的路径作为目录路径
+# 标为False的时候将下面的路径作为文件路径
+MultiVideo = False
+
+# 目标路径
+Path = ...
+
+# 是否展示一部分细节进度，标记为False会减少一部分输出
+ShowOutput = True
+
+# 保留在滑动窗口里的上文条数，默认为10
+# 更多的上文条数可能会带来更高的翻译质量，但会降低速度
+# 保留的上文条数过多会爆显存，或者让模型出现异常表现，不建议调得太高
+# 如果您不理解这是什么，请不要修改
+HistoryCount = 10
+
+# 保留在滑动窗口里的下文条数，默认为1
+# 更多的下文条数可能会带来更高的翻译质量，但会降低速度
+# 模型对下文条数非常敏感，稍稍增加下文条数都有可能会导致模型异常输出
+# 如果您不理解这是什么，请不要修改
+ForwardCount = 1
+
+# 对模型的额外提示，这个提示会包含在每一条输入和历史中
+# 对其做调整是玄学，不建议修改成过长过复杂的
+# 如果您不理解这是什么，请不要修改
+AdditionalPrompt = 翻译当前字幕
+
+# 控制是否显示双语字幕。这一条不会影响模型性能，根据自己喜好选择即可
+# 为True的时候是显示，为False的时候是不显示
+BothLanguage = True
+
+# 控制是否执行翻译。
+# 为False意味着不执行翻译，原文输出，为True则执行翻译。
+# 如果为False，则BothLanguage配置默认无效
+Translate = True
