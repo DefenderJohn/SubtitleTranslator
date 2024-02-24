@@ -1,13 +1,9 @@
-debugpy==1.8.1
 fsspec==2024.2.0
 huggingface-hub==0.20.3
 idna==3.6
 numpy==1.26.4
 openai-whisper==20231117
 prompt-toolkit==3.0.43
-pure-eval==0.2.2
-Pygments==2.17.2
-pyzmq==25.1.2
 safetensors==0.4.2
 sentencepiece==0.2.0
 tiktoken==0.6.0
@@ -17,8 +13,6 @@ tornado==6.4
 tqdm==4.66.2
 traitlets==5.14.1
 transformers==4.38.0
-triton==2.2.0
-typing_extensions==4.9.0
 urllib3==2.2.1
 wcwidth==0.2.13
 whisper==1.1.10
