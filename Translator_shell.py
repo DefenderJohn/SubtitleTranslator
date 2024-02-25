@@ -10,7 +10,7 @@ def transcribeToList(videoPath:str, modelInstance:str, showText:bool=False) -> L
     modelInstance = whisper.load_model(modelInstance)
     _ = print("加载模型完成") if showText else None
     _ = print("开始转录：") if showText else None
-    transcribeResult = modelInstance.transcribe(videoPath, verbose=False) if showText else modelInstance.transcribe(videoPath)
+    transcribeResult = modelInstance.transcribe(videoPath, verbose=False)
     _ = print("转录完成") if showText else None
 
     result = []
