@@ -10,7 +10,7 @@ def transcribeToList(videoPath:str, modelInstance:str, showText:bool=False) -> L
     modelInstance = whisper.load_model(modelInstance)
     _ = print("加载模型完成") if showText else None
     _ = print("开始转录：") if showText else None
-    transcribeResult = modelInstance.transcribe(videoPath, verbose=False)
+    transcribeResult = modelInstance.transcribe(videoPath, language="en", verbose=False)
     _ = print("转录完成") if showText else None
 
     result = []
@@ -52,14 +52,24 @@ def translateByChatGLM(history:str, prompt:str, model:AutoModel, tokenizer:AutoT
     past_key_values = None
     translateResult = ""
     current_length = 0
-    for response, history, past_key_values in model.stream_chat(tokenizer, prompt, history=history,
-                                                                    past_key_values=past_key_values,
-                                                                    return_past_key_values=True):
-        if stop_stream:
+    successTranslate = False
+    while not successTranslate:
+        for response, history, past_key_values in model.stream_chat(tokenizer, prompt, history=history,
+                                                                        past_key_values=past_key_values,
+                                                                        return_past_key_values=True):
+            if stop_stream:
+                successTranslate = True
+                break
+            else:
+                if len(translateResult) > 4096:
+                    successTranslate = False
+                    translateResult = ""
+                    break
+                translateResult += response[current_length:]
+                current_length = len(response)
+        if len(translateResult) < 4096:
+            successTranslate = True
             break
-        else:
-            translateResult += response[current_length:]
-            current_length = len(response)
     return translateResult
 
 def convertTime(time:float) -> str:
@@ -135,7 +145,7 @@ if batch:
                 endTime = transcribedSubtitles[index][0][1]
                 original = transcribedSubtitles[index][1]
                 translatedSubtitles.append(((beginTime, endTime),(original, translated)))
-            del model
+            del model, tokenizer
             torch.cuda.empty_cache()
             index = 0
             result = ""
@@ -144,7 +154,8 @@ if batch:
                 start = convertTime(subtitle[0][0])
                 end = convertTime(subtitle[0][1])
                 context = subtitle[1][1]
-                subtitleContent = f"{index}\n{start} --> {end}\n{context}\n\n"
+                original = subtitle[1][0]
+                subtitleContent =f"{index}\n{start} --> {end}\n{context}\n{original}\n\n"
                 result += subtitleContent
             writeToFile(fileName=f"{fileName}.srt", content=result)
         else:
@@ -186,7 +197,7 @@ else:
             end = convertTime(subtitle[0][1])
             original = subtitle[1][0]
             context = subtitle[1][1]
-            subtitleContent = f"{index}\n{start} --> {end}\n{context}\n\n" if not bothLanguage else f"{index}\n{start} --> {end}\n{context}\n{original}\n\n"
+            subtitleContent =f"{index}\n{start} --> {end}\n{context}\n{original}\n\n"
             result += subtitleContent
         writeToFile(fileName=f"{fileName}.srt", content=result)
     else:
