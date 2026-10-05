@@ -26,6 +26,8 @@ class AsrConfig:
     device: str = "cuda"
     dtype: str = "bfloat16"
     chunk_max_seconds: float = 290.0  # ForcedAligner 单次硬上限 5 分钟，留余量
+    language: Optional[str] = None  # 源语言，None=自动检测
+    ffmpeg_path: str = ""  # ffmpeg 二进制路径，空=自动探测（PATH → imageio-ffmpeg）
 
     def __post_init__(self) -> None:
         if self.backend not in ASR_BACKENDS:

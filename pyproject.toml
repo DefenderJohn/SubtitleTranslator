@@ -37,3 +37,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: 需要真实外部工具（如 ffmpeg）的集成测试",
+]
