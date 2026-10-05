@@ -64,14 +64,16 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。业务逻
 
 ## 5. 翻译层（translate/）
 
-- 接口：OpenAI 兼容端点，配置仅四字段：`base_url` / `api_key` / `model` / `temperature`。本地 vLLM / Ollama 也走同一接口。
-- 三步走：
-  1. **摘要**：整片字幕一次调用生成摘要；
-  2. **术语表**：提取高频专名生成术语表（`src` / `dst` / `count`，上限约 50 条，解析失败重试）；
-  3. **滑动窗口逐句翻译**：历史对 + 前瞻 + 术语表注入 system prompt。
-- **人工确认检查点**：术语表翻译前需人工确认（`glossary.confirmed`）。
-- 可选术语后校验：第一版只标记不重翻。
-- 翻译策略做成**可插拔接口**，但第一版只实现上述这一个策略。
+- 接口：OpenAI 兼容端点，配置仅四字段：`base_url` / `api_key` / `model` / `temperature`。本地 vLLM / Ollama 也走同一接口。HTTP 用官方 `openai` SDK 的 chat.completions（非 streaming），SDK 自重试关闭，由 `client.py` 统一做指数退避（429 / 5xx / 超时 / 连接错误，最多 `max_retries` 次，超时 `request_timeout` 默认 120s）。
+- 模块拆分：`client.py`（SDK 封装+退避）、`prompts.py`（prompt 模板）、`context.py`（摘要）、`glossary.py`（术语表提取与解析）、`strategy.py`（策略 ABC + 实现）。
+- 三步走（`SlidingWindowStrategy.translate(project, cfg, progress_cb=None, auto_confirm=False)` 编排，断点续传时已完成步骤自动跳过）：
+  1. **摘要**：整片字幕一次调用生成摘要，存入 `project.meta.summary`；全文超过 `SUMMARY_MAX_CHARS`（常量，100K 字符）时按 cue 边界分块 map-reduce（逐块摘要→合并摘要）；
+  2. **术语表**：基于摘要+全文提取高频专名，要求模型按固定格式 `原文 | 译文 | 出现次数` 逐行输出，解析成 GlossaryEntry，上限 `glossary_max_entries`；一条都解析不出时换提示（追加严格格式说明）并降批（条数上限减半）重试，最多 `glossary_max_retries` 次，仍失败抛 `GlossaryExtractError`。**生成后 stage 变为 `contexted`；逐句翻译开始前必须所有条目 `confirmed=true`**（人工确认检查点），否则抛 `GlossaryNotConfirmedError`；`auto_confirm=True`（CLI `--auto-confirm`）自动全部置 true；
+  3. **滑动窗口逐句翻译**：每条 cue 的 messages 组装为：system（角色 + 目标语言 + additional_prompt + 摘要 + 已确认术语表）→ 前 `history_count` 条已翻译的「原文→译文」拼成 user/assistant 消息对 → 当前 user（待译原文 + 后 `forward_count` 条原文，明确标注「不要翻译」）。调用间是独立请求，无服务端状态。
+- **防御性解析**：译文剥离编号前缀与多余空白；空输出 / 明显复读（译文 > 原文 10 倍或 > 500 字符）触发单条重试（最多 2 次，第二次降 temperature 至一半），仍失败保留原文占位并打 `translation_failed` 标记，不中断整体流程。
+- **术语后校验**（第一版只标记不重翻）：原文含某术语 src 而译文不含对应 dst，在该 cue 的 `flags` 上记 `glossary_miss:<src>`。
+- 进度回调：`progress_cb(done, total)`，逐条推进。
+- 翻译策略为可插拔接口 `TranslationStrategy` ABC（`translate(project, cfg, progress_cb, auto_confirm) -> project`），第一版只实现 `SlidingWindowStrategy`；测试注入 fake client，不打真实 API。
 
 ## 6. 存储（models.py）
 
@@ -93,7 +95,8 @@ JSON schema：
       "end": 0.0,
       "text": "...",
       "translation": "...",
-      "words": [ { "text": "...", "start": 0.0, "end": 0.0 } ]
+      "words": [ { "text": "...", "start": 0.0, "end": 0.0 } ],
+      "flags": []
     }
   ],
   "stage": "transcribed"
@@ -102,6 +105,7 @@ JSON schema：
 
 - `stage` 取值：`empty`（初始态，尚未转录）→ `transcribed` → `contexted` → `translated`，驱动断点续传。
 - `words` 词级时间戳为未来功能（波形修轴、剪辑）预留。
+- `cues[].flags` 为翻译层标记列表，当前取值：`translation_failed`（重试后仍失败，保留原文占位）、`glossary_miss:<src>`（术语后校验未命中）。
 - 序列化约定：缺字段给默认值；`version` 与当前 SCHEMA_VERSION 不匹配时抛出 `SchemaVersionError`；非法 `stage` 抛 `ValueError`。
 - SRT 导出语义：双语导出译文在上、原文在下（与旧版一致）；单语导出优先译文、无译文退化为原文。
 
@@ -110,7 +114,7 @@ JSON schema：
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
 - 分三节：`asr` / `translate` / `ui`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（ForcedAligner ≤5min 留余量）、`asr.language=null`（源语言，null=自动检测）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`。
+- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（ForcedAligner ≤5min 留余量）、`asr.language=null`（源语言，null=自动检测）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）。
 
 ## 8. 网页（server/ + frontend/）
 
@@ -125,6 +129,6 @@ JSON schema：
 
 ## 10. 依赖策略
 
-- 核心依赖尽量轻（当前只有 pyyaml）。
+- 核心依赖尽量轻（当前只有 pyyaml + openai）。
 - `torch` / `vllm` / `qwen-asr` / `transformers` 列为 optional extra（`asr`），FastAPI 等为 `web` extra，按环境单独安装。
 - 依赖版本只钉下界，不钉死。
