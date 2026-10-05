@@ -30,7 +30,7 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 ├── tests/                      # pytest
 ├── docs/DESIGN.md              # 设计定案
 ├── docs/ENVIRONMENT.md         # 环境摸底
-└── （legacy，最后阶段才清理：Translator_shell.py / Config.ini / requirements.txt）
+└── c/test.ogg                  # 旧版测试音频（保留，供真实冒烟用）
 ```
 
 ## 开发约定

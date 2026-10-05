@@ -81,11 +81,3 @@ subtitle-translator serve   # 浏览器打开 http://127.0.0.1:7860
 - **设置页**：读写 config.yaml（ASR / 翻译 / 界面三组）；api_key 显示掩码值、留空不修改，密钥已通过环境变量配置时显示绿色提示。
 
 开发模式：`npm run dev`（vite dev server，`/api` 代理到 127.0.0.1:7860，需先启动后端）。
-
-## Legacy 文件
-
-以下文件是 2024 年旧版的遗留，**暂时保留**，将在重构最后阶段清理：
-
-- `Translator_shell.py`（旧命令行主程序）
-- `Config.ini`（旧配置）
-- `requirements.txt`（旧依赖清单）
