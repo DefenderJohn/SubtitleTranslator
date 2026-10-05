@@ -506,3 +506,24 @@ class TestStaticHosting:
             assert "spa" in resp.text
             # API 不被静态托管挡住
             assert c.get("/api/tasks").status_code == 200
+
+    def test_spa_route_falls_back_to_index(self, config_path, tmp_path):
+        """前端路由（react-router 的客户端路径）应回退到 index.html 而非 404。"""
+        dist = tmp_path / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<html>spa</html>", encoding="utf-8")
+        (dist / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+        with TestClient(create_app(config_path=config_path, frontend_dist=dist)) as c:
+            # 客户端路由 → index.html
+            resp = c.get("/tasks/abc123")
+            assert resp.status_code == 200
+            assert "spa" in resp.text
+            # 静态资源正常命中
+            resp = c.get("/assets/app.js")
+            assert resp.status_code == 200
+            assert resp.text == "console.log(1)"
+            # 目录穿越不泄露 dist 外的文件
+            resp = c.get("/../config.yaml")
+            assert resp.status_code in (200, 404)
+            if resp.status_code == 200:
+                assert "spa" in resp.text  # 回退到 index.html，而非读出文件

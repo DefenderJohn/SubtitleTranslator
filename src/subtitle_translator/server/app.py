@@ -8,7 +8,8 @@ HTTP 协议转换与路径 / 参数校验。任务调度见 :mod:`.tasks`。
   后打开的页面能恢复进度；
 - 视频流支持 HTTP Range（拖动进度条），单区间 bytes=start-end；
 - api_key 不明文返回（masked），PUT 时空字符串 / mask 值表示不修改；
-- 前端构建产物 frontend/dist 存在时挂载到 /，否则给占位提示页。
+- 前端构建产物 frontend/dist 存在时挂载到 /（SPA 路由回退 index.html），
+  否则给占位提示页。
 """
 
 from __future__ import annotations
@@ -22,8 +23,7 @@ from typing import Optional, Union
 
 from fastapi import Body, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import (
@@ -433,7 +433,25 @@ def create_app(
 
     dist = Path(frontend_dist) if frontend_dist else DEFAULT_FRONTEND_DIST
     if dist.is_dir():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+        dist_root = dist.resolve()
+        index_html = dist_root / "index.html"
+
+        def _serve_spa(full_path: str):
+            """托管前端构建产物；前端路由（如 /tasks/xxx）回退到 index.html。"""
+            if full_path:
+                candidate = (dist_root / full_path).resolve()
+                # 防目录穿越：必须落在 dist 内
+                if candidate.is_file() and candidate.is_relative_to(dist_root):
+                    return FileResponse(candidate)
+            return FileResponse(index_html)
+
+        @app.get("/", include_in_schema=False)
+        def spa_index():
+            return _serve_spa("")
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def spa_fallback(full_path: str):
+            return _serve_spa(full_path)
     else:
 
         @app.get("/", response_class=HTMLResponse)
