@@ -57,6 +57,52 @@ def _get(obj, name: str, default=None):
     return getattr(obj, name, default)
 
 
+# qwen-asr 的 language 参数只接受规范语言名（"English" / "Chinese" ...），
+# 这里把常见 ISO 代码映射过去；其余值原样透传（qwen-asr 会校验并给出清晰报错）
+_LANGUAGE_CODES = {
+    "zh": "Chinese",
+    "en": "English",
+    "yue": "Cantonese",
+    "ar": "Arabic",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ko": "Korean",
+    "ru": "Russian",
+    "th": "Thai",
+    "vi": "Vietnamese",
+    "ja": "Japanese",
+    "tr": "Turkish",
+    "hi": "Hindi",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "sv": "Swedish",
+    "da": "Danish",
+    "fi": "Finnish",
+    "pl": "Polish",
+    "cs": "Czech",
+    "fil": "Filipino",
+    "fa": "Persian",
+    "el": "Greek",
+    "ro": "Romanian",
+    "hu": "Hungarian",
+    "mk": "Macedonian",
+}
+
+
+def _normalize_language(language: Optional[str]) -> Optional[str]:
+    """语言代码（en/zh/...）转 qwen-asr 规范语言名；已是规范名或 None 时透传。"""
+    if not language:
+        return None
+    s = str(language).strip()
+    if not s:
+        return None
+    return _LANGUAGE_CODES.get(s.lower(), s)
+
+
 def _extract_result(result) -> tuple[str, list[WordTiming]]:
     """从 qwen-asr 的单条转录结果抽出 (text, words)。
 
@@ -151,7 +197,7 @@ class VllmBackend(AsrBackend):
         self._ensure_loaded()
         results = self._model.transcribe(
             audio=str(audio_path),
-            language=language,
+            language=_normalize_language(language),
             return_time_stamps=True,
         )
         return _extract_result(results[0])
@@ -177,7 +223,7 @@ class TransformersBackend(AsrBackend):
         self._ensure_loaded()
         results = self._model.transcribe(
             audio=str(audio_path),
-            language=language,
+            language=_normalize_language(language),
             return_time_stamps=True,
         )
         return _extract_result(results[0])

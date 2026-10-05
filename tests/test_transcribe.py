@@ -142,6 +142,22 @@ class TestExtractResult:
         assert words == [WordTiming(text="hi", start=1.0, end=2.0)]
 
 
+class TestNormalizeLanguage:
+    def test_codes(self):
+        assert transcribe._normalize_language("en") == "English"
+        assert transcribe._normalize_language("ZH") == "Chinese"
+        assert transcribe._normalize_language("ja") == "Japanese"
+
+    def test_canonical_name_passthrough(self):
+        assert transcribe._normalize_language("English") == "English"
+        assert transcribe._normalize_language("Klingon") == "Klingon"  # 未知值透传
+
+    def test_empty(self):
+        assert transcribe._normalize_language(None) is None
+        assert transcribe._normalize_language("") is None
+        assert transcribe._normalize_language("  ") is None
+
+
 class FakeBackend(AsrBackend):
     """固定返回两个词的假 backend，记录调用参数。"""
 
