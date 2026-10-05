@@ -24,7 +24,9 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 │   ├── cli.py                  # CLI 薄壳（argparse：run / export / glossary / serve / config init）
 │   └── server/                 # FastAPI 薄壳（REST + SSE + Range 视频流）
 │                               #   tasks.py(任务注册表+单并发worker+状态机) app.py(create_app+路由)
-├── frontend/                   # React + Ant Design（Vite），阶段 7 占位
+├── frontend/                   # React + Ant Design 5 + TypeScript（Vite 构建，
+│                               #   dist 由 server 托管）；src/api.ts 集中 API 封装，
+│                               #   pages/(任务/任务详情/设置) + components/(目录浏览/术语表/cue 校对)
 ├── tests/                      # pytest
 ├── docs/DESIGN.md              # 设计定案
 ├── docs/ENVIRONMENT.md         # 环境摸底

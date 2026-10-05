@@ -174,7 +174,7 @@ JSON schema：
   waiting_confirm = 术语表人工确认检查点未通过（GlossaryNotConfirmedError），网页确认术语后 resume 续跑；running 的取消是协作式（当前 cue 完成后停，已翻译进度已落盘）。
 - **每次执行任务重新加载 config.yaml**：网页改配置对后续任务生效。
 - **CORS**：允许 localhost / 127.0.0.1 任意端口（vite dev server）。
-- **静态托管**：`frontend/dist` 存在时挂载到 `/`，不存在时 `/` 返回占位提示页；API 路由优先于静态挂载。
+- **静态托管**：`frontend/dist` 存在时挂载到 `/`（前端路由回退 index.html，SPA fallback），不存在时 `/` 返回占位提示页；API 路由优先于静态挂载。
 - **路径安全**：本工具是 localhost 单用户工具，API 的路径参数就是本机文件路径（选文件/浏览目录是功能本身），不做沙箱化。
 
 ### 8.2 API 清单

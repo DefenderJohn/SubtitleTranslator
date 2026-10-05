@@ -5,6 +5,7 @@
 | OS | Ubuntu 22.04.5 LTS，x86_64 |
 | Python | 3.13.11（miniconda，/home/john/miniconda3） |
 | 包管理 | pip 25.3、uv 0.11.6 均可用 |
+| Node.js | v22.22.0、npm 10.9.4（系统 /usr/bin/node，2026-10-06 前端阶段确认可用）；npm registry 官方源（registry.npmjs.org）连通 |
 | ffmpeg | **已通过 imageio-ffmpeg 0.6.0 获得**（静态二进制 ffmpeg 7.0.2，`python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"`）；PATH 上无 ffmpeg/ffprobe。代码用 `asr.ffmpeg_path` 配置或自动探测（PATH → imageio-ffmpeg），时长用 `ffmpeg -i` stderr 解析兜底 |
 | GPU | NVIDIA GeForce RTX 2080 Ti，22GB 显存（sm_75 Turing） |
 | 驱动 / CUDA | 驱动 590.57，CUDA 13.1 |

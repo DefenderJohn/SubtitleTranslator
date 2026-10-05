@@ -60,7 +60,27 @@ pip install -e .[web]        # FastAPI / uvicorn
 subtitle-translator serve    # 默认 http://127.0.0.1:7860（ui 节配置，--host/--port 覆盖）
 ```
 
-FastAPI 薄壳：任务管理（创建/列表/取消/术语确认后 resume）、SSE 进度推送（直接透传 pipeline 事件协议，含历史回放）、Range 视频流预览、工程 JSON / 术语表 / cue 文本在线编辑、config.yaml 读写（api_key 不明文返回）。单并发任务队列（本地单 GPU）。API 文档启动后见 `/docs`，完整清单见 [docs/DESIGN.md](docs/DESIGN.md) 第 8 节。前端（React + Ant Design）尚未构建时 `/` 给占位提示页。
+FastAPI 薄壳：任务管理（创建/列表/取消/术语确认后 resume）、SSE 进度推送（直接透传 pipeline 事件协议，含历史回放）、Range 视频流预览、工程 JSON / 术语表 / cue 文本在线编辑、config.yaml 读写（api_key 不明文返回）。单并发任务队列（本地单 GPU）。API 文档启动后见 `/docs`，完整清单见 [docs/DESIGN.md](docs/DESIGN.md) 第 8 节。
+
+### 网页使用
+
+前端是 `frontend/` 下的 React + Ant Design 5（Vite + TypeScript）应用，构建产物 `frontend/dist` 由后端直接托管（前端路由回退 index.html）：
+
+```bash
+cd frontend
+npm install
+npm run build          # 产出 frontend/dist
+subtitle-translator serve   # 浏览器打开 http://127.0.0.1:7860
+```
+
+页面功能：
+
+- **任务页**（默认）：路径输入 + 目录浏览弹窗选择媒体文件/目录，选项（自动确认术语 / 双语导出 / 仅转录 / 源语言）创建任务；任务列表含状态标签与实时进度条（SSE 推送），可取消、进详情。
+- **任务详情页**：事件日志流（SSE 历史回放 + 实时追加）；`waiting_confirm` 时展示摘要与可编辑术语表，「全部确认并继续」resume 续跑；完成后一键导出 SRT 并显示结果路径。
+- **字幕校对**（详情页 tab）：cue 表格（起止时间 / 原文 / 译文可编辑），术语不一致标记（`glossary_miss`）红色提示；右侧视频预览，点击 cue 行跳转播放。
+- **设置页**：读写 config.yaml（ASR / 翻译 / 界面三组）；api_key 显示掩码值、留空不修改，密钥已通过环境变量配置时显示绿色提示。
+
+开发模式：`npm run dev`（vite dev server，`/api` 代理到 127.0.0.1:7860，需先启动后端）。
 
 ## Legacy 文件
 
