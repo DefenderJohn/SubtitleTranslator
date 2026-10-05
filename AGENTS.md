@@ -21,8 +21,9 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 │   ├── pipeline.py             # 流水线编排 + 断点续传（stage 驱动）+ run_batch 批量；
 │   │                           #   进度回调协议 progress_cb({media,stage,done,total,message})
 │   ├── srt.py                  # SRT / 双语 SRT 导出
-│   ├── cli.py                  # CLI 薄壳（argparse：run / export / glossary / config init）
+│   ├── cli.py                  # CLI 薄壳（argparse：run / export / glossary / serve / config init）
 │   └── server/                 # FastAPI 薄壳（REST + SSE + Range 视频流）
+│                               #   tasks.py(任务注册表+单并发worker+状态机) app.py(create_app+路由)
 ├── frontend/                   # React + Ant Design（Vite），阶段 7 占位
 ├── tests/                      # pytest
 ├── docs/DESIGN.md              # 设计定案
@@ -39,3 +40,5 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 - **依赖**：核心保持轻量（pyyaml + openai）；torch / vllm / qwen-asr 等只放 optional extras，版本只钉下界。
 - 占位模块只写 docstring 说明职责，业务实现按阶段逐步填充。
 - **进度回调协议**：`progress_cb({"media", "stage", "done", "total", "message"})`（pipeline 层统一定义，网页 SSE 直接复用；transcribe / translate 内层的 `(done, total)` 回调由 pipeline 包装成该协议）。
+- **协作式取消**：`progress_cb` 抛 `pipeline.PipelineCancelledError` 即取消（当前 cue/块完成后停，translate 阶段会先落盘已翻译 cue）；网页层在回调里检查任务取消标志。
+- **server 层**：fastapi/uvicorn/httpx 在 `web`/`dev` extras，延迟导入保持 core 可独立用；业务逻辑不写在 server（薄壳，只协议转换）；SSE 事件 = pipeline 五键 + task_id + status。

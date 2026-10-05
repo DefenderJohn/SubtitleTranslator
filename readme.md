@@ -53,6 +53,15 @@ subtitle-translator export movie.sub.json --bilingual -o out.srt
 
 断点续传：每个媒体文件对应 `xxx.sub.json` 工程文件（唯一事实来源），每完成一个阶段立即落盘，重跑自动跳过已完成阶段。CLI 参数（如 `--language en`）覆盖 yaml 配置。
 
+## 网页服务
+
+```bash
+pip install -e .[web]        # FastAPI / uvicorn
+subtitle-translator serve    # 默认 http://127.0.0.1:7860（ui 节配置，--host/--port 覆盖）
+```
+
+FastAPI 薄壳：任务管理（创建/列表/取消/术语确认后 resume）、SSE 进度推送（直接透传 pipeline 事件协议，含历史回放）、Range 视频流预览、工程 JSON / 术语表 / cue 文本在线编辑、config.yaml 读写（api_key 不明文返回）。单并发任务队列（本地单 GPU）。API 文档启动后见 `/docs`，完整清单见 [docs/DESIGN.md](docs/DESIGN.md) 第 8 节。前端（React + Ant Design）尚未构建时 `/` 给占位提示页。
+
 ## Legacy 文件
 
 以下文件是 2024 年旧版的遗留，**暂时保留**，将在重构最后阶段清理：

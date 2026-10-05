@@ -17,7 +17,8 @@
 - PyYAML 6.0.3、ruamel.yaml 0.18.16
 - setuptools 80.9.0、wheel 0.45.1
 - pytest 8.x、imageio-ffmpeg 0.6.0（静态 ffmpeg 7.0.2 二进制，含 silencedetect）
-- **未安装**：fastapi、uvicorn、qwen-asr、vllm、transformers
+- **未安装**：qwen-asr、vllm、transformers
+- **2026-10-06 新增**：fastapi 0.142、uvicorn 0.54、httpx 0.28（网页服务，`web` / `dev` extras）
 
 ## 风险与注意事项
 

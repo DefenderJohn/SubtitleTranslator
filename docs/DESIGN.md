@@ -57,6 +57,7 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。业务逻
   {"media": "/path/movie.mp4", "stage": "translate", "done": 12, "total": 100, "message": "翻译 12/100"}
   ```
   `stage` ∈ `transcribe` / `translate` / `export`；阶段开始与结束时 `done=0, total=0`（信息在 `message`），进行中 `done/total` 为实际进度（转录=块数，翻译=cue 条数）。
+- **协作式取消协议**（网页任务取消用）：`progress_cb` 可抛 `PipelineCancelledError`；取消在回调边界生效（当前 cue / 块完成后停）。translate 阶段被取消时先把已翻译的 cue 落盘（stage 保持 `contexted`）再传播，重跑即断点续传；`run_batch` 遇取消停止整个批次（不记为失败）。
 
 ### 2.2 CLI（cli.py）
 
@@ -156,6 +157,59 @@ JSON schema：
 - 前端：React + Ant Design，Vite 构建。
 - 第一版只做：上传/选文件、任务列表+进度、字幕表格文本编辑、术语表确认、下载。
 - 波形修轴和剪辑是未来功能；数据格式已预留（words 词级时间戳）。
+
+### 8.1 server 架构（localhost 单用户）
+
+- **薄壳**：业务逻辑全部走 core（pipeline / models / config），server 只做协议转换与参数校验。
+- **任务调度**：进程内任务注册表 + 单并发 asyncio worker（本地单 GPU，排队即可，不引入 Celery/Redis）。同步 pipeline 用 `asyncio.to_thread` 执行；pipeline 的 progress_cb 在 worker 线程被调用，事件经 `loop.call_soon_threadsafe` 推给 SSE 订阅队列（asyncio.Queue 非线程安全，任务入队端点用 async def 在事件循环线程执行）。
+- **SSE**：`GET /api/tasks/{id}/events` 直接透传 pipeline event 五键，附加 `task_id` 与 `status`；订阅时先回放历史事件（后打开的页面可恢复进度），任务进入终态（done/failed/cancelled）后关流。状态变更也产生事件（stage 为空串）。
+- **任务状态机**：
+  ```
+  pending ──→ running ──→ done
+        │        ├──────→ failed
+        │        ├──────→ waiting_confirm ──(POST resume)──→ pending
+        │        └──────→ cancelled
+        └──(cancel)──→ cancelled
+  ```
+  waiting_confirm = 术语表人工确认检查点未通过（GlossaryNotConfirmedError），网页确认术语后 resume 续跑；running 的取消是协作式（当前 cue 完成后停，已翻译进度已落盘）。
+- **每次执行任务重新加载 config.yaml**：网页改配置对后续任务生效。
+- **CORS**：允许 localhost / 127.0.0.1 任意端口（vite dev server）。
+- **静态托管**：`frontend/dist` 存在时挂载到 `/`，不存在时 `/` 返回占位提示页；API 路由优先于静态挂载。
+- **路径安全**：本工具是 localhost 单用户工具，API 的路径参数就是本机文件路径（选文件/浏览目录是功能本身），不做沙箱化。
+
+### 8.2 API 清单
+
+任务与媒体：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| POST | `/api/tasks` | 创建任务：body `{path, options{auto_confirm, bilingual, transcribe_only, language}}`，path 文件/目录自动判断，返回任务快照（含 id） |
+| GET | `/api/tasks` | 任务列表（id、path、media、status、progress 快照、created_at） |
+| GET | `/api/tasks/{id}` | 任务详情 |
+| GET | `/api/tasks/{id}/events` | SSE 订阅（历史回放 + 实时推送，终态关流） |
+| POST | `/api/tasks/{id}/cancel` | 取消（协作式）；终态返回 409 |
+| POST | `/api/tasks/{id}/resume` | waiting_confirm 任务重新排队继续；其他状态 409 |
+| GET | `/api/media?path=` | 浏览目录：返回子目录名 + 递归媒体文件清单（复用 find_media_files） |
+| GET | `/api/video?path=` | 视频流，支持单区间 Range（bytes=start-end / start- / -suffix），206 + Content-Range，非法区间 416 |
+
+工程数据（JSON 是唯一事实来源，直接读写 `.sub.json`；path 参数传 `.sub.json` 或对应媒体文件路径均可）：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/project?path=` | 读工程完整 JSON |
+| PATCH | `/api/project/cues` | 编辑单条 cue 的 text/translation（body 含 path、cue_id） |
+| GET | `/api/project/glossary?path=` | 读术语表 |
+| PATCH | `/api/project/glossary` | 改术语（updates 按 src 匹配，可改 dst / new_src）、按 src confirm 单条或 confirm_all |
+| POST | `/api/project/export` | 对工程导出 SRT（bilingual 参数），返回 srt_path |
+
+配置：
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/config` | 读 config.yaml；**api_key 不明文返回**（masked，如 `sk-...***`），另返回 `api_key_resolved` 表示密钥是否已可用（可能来自 api_key_env） |
+| PUT | `/api/config` | 局部更新（按节给 dict，未知节/字段 400，改后重建配置节触发校验）；api_key 传空字符串或 mask 值表示不修改；文件里已有/新设明文 key 时保留，否则不落盘明文 |
+
+启动：`subtitle-translator serve [--config path] [--host] [--port]`（host/port 默认取 ui 节配置）。
 
 ## 9. 断点续传
 
