@@ -24,7 +24,7 @@ class AsrConfig:
     model: str = "Qwen/Qwen3-ASR-1.7B"
     aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B"
     device: str = "cuda"
-    dtype: str = "bfloat16"
+    dtype: str = "float16"  # RTX 2080 Ti（Turing）不支持 bf16 原生计算，用 float16
     chunk_max_seconds: float = 290.0  # ForcedAligner 单次硬上限 5 分钟，留余量
     language: Optional[str] = None  # 源语言，None=自动检测
     ffmpeg_path: str = ""  # ffmpeg 二进制路径，空=自动探测（PATH → imageio-ffmpeg）

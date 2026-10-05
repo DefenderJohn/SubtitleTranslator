@@ -16,11 +16,16 @@ dependencies = [
 
 [project.optional-dependencies]
 # 转录层重依赖，按环境单独安装；版本只钉下界
+# transformers backend 即可用；vllm backend（更快）需另装 asr-vllm extra，
+# 注意新版 vLLM 对 Turing（sm_75）等老架构支持不佳，老卡请用 transformers
 asr = [
-    "qwen-asr>=0.1",
+    "qwen-asr>=0.0.5",
     "torch>=2.2",
-    "vllm>=0.6",
     "transformers>=4.45",
+]
+asr-vllm = [
+    "subtitle-translator[asr]",
+    "vllm>=0.6",
 ]
 web = [
     "fastapi>=0.110",

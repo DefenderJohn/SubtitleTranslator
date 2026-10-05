@@ -58,7 +58,11 @@ def _get(obj, name: str, default=None):
 
 
 def _extract_result(result) -> tuple[str, list[WordTiming]]:
-    """从 qwen-asr 的单条转录结果抽出 (text, words)。"""
+    """从 qwen-asr 的单条转录结果抽出 (text, words)。
+
+    真实 API：结果对象有 .text / .time_stamps，词级时间戳元素字段为
+    text / start_time / end_time（可能是对象属性也可能是 dict）。
+    """
     text = str(_get(result, "text", "") or "")
     raw_words = (
         _get(result, "time_stamps")
@@ -69,12 +73,33 @@ def _extract_result(result) -> tuple[str, list[WordTiming]]:
     words = [
         WordTiming(
             text=str(_get(w, "text", "")),
-            start=float(_get(w, "start", 0.0)),
-            end=float(_get(w, "end", 0.0)),
+            start=float(_get(w, "start_time", _get(w, "start", 0.0))),
+            end=float(_get(w, "end_time", _get(w, "end", 0.0))),
         )
         for w in raw_words
     ]
     return text, words
+
+
+def _resolve_dtype(name: str):
+    """配置里的 dtype 字符串转 torch.dtype（qwen-asr 的 dtype 参数是 torch 对象）。"""
+    import torch
+
+    mapping = {
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "auto": "auto",
+    }
+    try:
+        return mapping[name.lower()]
+    except KeyError:
+        raise ValueError(
+            f"非法 asr.dtype: {name!r}，合法取值为: {', '.join(mapping)}"
+        ) from None
 
 
 class AsrBackend(ABC):
@@ -113,10 +138,13 @@ class VllmBackend(AsrBackend):
         if self._model is not None:
             return
         Qwen3ASRModel = _import_qwen_asr()
+        dtype = _resolve_dtype(self.cfg.dtype)
         self._model = Qwen3ASRModel.LLM(
             model=self.cfg.model,
+            dtype=self.cfg.dtype,  # vLLM 侧接受字符串 dtype
+            gpu_memory_utilization=0.85,
             forced_aligner=self.cfg.aligner_model,
-            dtype=self.cfg.dtype,
+            forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device),
         )
 
     def transcribe_chunk(self, audio_path, language=None):
@@ -136,11 +164,13 @@ class TransformersBackend(AsrBackend):
         if self._model is not None:
             return
         Qwen3ASRModel = _import_qwen_asr()
+        dtype = _resolve_dtype(self.cfg.dtype)
         self._model = Qwen3ASRModel.from_pretrained(
             self.cfg.model,
-            forced_aligner=self.cfg.aligner_model,
-            dtype=self.cfg.dtype,
+            dtype=dtype,
             device_map=self.cfg.device,
+            forced_aligner=self.cfg.aligner_model,
+            forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device),
         )
 
     def transcribe_chunk(self, audio_path, language=None):

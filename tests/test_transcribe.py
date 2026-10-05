@@ -113,6 +113,34 @@ class TestExtractResult:
         assert text == "hi"
         assert words == [WordTiming(text="hi", start=1.0, end=2.0)]
 
+    def test_real_qwen_asr_shape(self):
+        """贴近真实 qwen-asr 返回：time_stamps 元素字段为 text/start_time/end_time。"""
+
+        class Word:
+            def __init__(self, text, start_time, end_time):
+                self.text = text
+                self.start_time = start_time
+                self.end_time = end_time
+
+        class R:
+            language = "English"
+            text = "hi there"
+            time_stamps = [Word("hi", 0.0, 0.4), Word("there", 0.5, 0.9)]
+
+        text, words = transcribe._extract_result(R())
+        assert text == "hi there"
+        assert words == [
+            WordTiming(text="hi", start=0.0, end=0.4),
+            WordTiming(text="there", start=0.5, end=0.9),
+        ]
+
+    def test_dict_start_time_style(self):
+        text, words = transcribe._extract_result(
+            {"text": "hi", "time_stamps": [{"text": "hi", "start_time": 1, "end_time": 2}]}
+        )
+        assert text == "hi"
+        assert words == [WordTiming(text="hi", start=1.0, end=2.0)]
+
 
 class FakeBackend(AsrBackend):
     """固定返回两个词的假 backend，记录调用参数。"""
