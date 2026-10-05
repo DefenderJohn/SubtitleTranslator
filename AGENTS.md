@@ -13,6 +13,7 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 │   ├── models.py               # 数据结构 / JSON schema（唯一事实来源）
 │   ├── transcribe.py           # 转录层：qwen-asr，vLLM / transformers 双 backend，
 │   │                           #   ffmpeg silencedetect 切块（ForcedAligner ≤5min）
+│   ├── media.py                # ffmpeg 封装：时长探测 / 静音检测 / 音频切块
 │   ├── segment.py              # 分段器：词级时间戳 → 字幕行
 │   ├── translate/              # 翻译层：OpenAI 兼容端点，三步走，可插拔策略
 │   ├── pipeline.py             # 流水线编排 + 断点续传（stage 驱动）

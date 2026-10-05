@@ -41,24 +41,26 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。业务逻
 
 音视频 → 转录 → 分段 →（摘要 + 术语表，人工确认检查点）→ 滑动窗口逐句翻译 → 导出 SRT / 双语 SRT。
 
-## 3. 转录层（transcribe.py）
+## 3. 转录层（transcribe.py + media.py）
 
 - 使用官方 `qwen-asr` Python 包（`Qwen3ASRModel`）：
   - 转录模型：`Qwen/Qwen3-ASR-1.7B`
-  - 对齐模型：`Qwen/Qwen3-ForcedAligner-0.6B`，产出词级时间戳
-- 两个 backend：**vLLM 优先、transformers 兜底**，做成配置项，对上层接口零差异。
+  - 对齐模型：`Qwen/Qwen3-ForcedAligner-0.6B`，产出词级时间戳（`return_time_stamps=True`）
+- 两个 backend：**vLLM 优先（`Qwen3ASRModel.LLM(...)`）、transformers 兜底（`.from_pretrained(...)`）**，做成配置项 `asr.backend`，对上层接口零差异（`AsrBackend` 抽象：`load()` / `transcribe_chunk(audio_path, language)` / `unload()`）。`qwen_asr` 在 `load()` 内延迟 import，未安装时模块仍可 import、`load()` 报清晰错误。
 - **硬约束**：ForcedAligner 单次只支持 ≤ 5 分钟音频。因此必须自写切块层：
-  - 用 `ffmpeg silencedetect` 找静音边界切块（刻意不引入 silero-vad 等额外 torch 依赖）；
-  - 逐块转录 + 对齐，然后拼接并偏移时间戳。
-- **ffmpeg 是硬依赖**（将来剪辑功能也要用）。
+  - 用 `ffmpeg silencedetect` 找静音边界（刻意不引入 silero-vad 等额外 torch 依赖）；
+  - `chunk_plan(duration, silences, max_seconds)` 纯函数切块：优先在目标切点之前最接近目标的静音中点下刀，找不到静音时硬切并记 warning；
+  - `transcribe_media(path, cfg, backend=None, progress_cb=None)`：probe → 切块 → 逐块抽 16kHz 单声道 wav 转录 → 词级时间戳加块偏移量拼接 → 直接流水线调用分段器产出 cues（`stage=transcribed`）。
+- **ffmpeg 是硬依赖**（将来剪辑功能也要用）。`media.py` 封装：二进制路径解析顺序为 `asr.ffmpeg_path` 配置 → PATH → imageio-ffmpeg 静态二进制，找不到时报错并给出安装指引；没有 ffprobe 时用 `ffmpeg -i` 的 stderr 解析 Duration 兜底。
+- **词级时间戳不存顶层 `raw_words` 字段**：分段后每个 cue 的 `words` 已完整承载词级时间戳，展平所有 cue 的 words 即可恢复原始词序列，避免冗余。
 
 ## 4. 分段器（segment.py）
 
-独立模块。输入词级时间戳，按以下规则切成字幕行（cue）：
+独立纯函数模块：`segment_words(words, *, max_chars=42, max_duration=7.0, min_duration=1.0, gap_threshold=0.6)`。
 
-- 标点；
-- 停顿（词间 gap）；
-- 时长与字符上限。
+断点优先级：句末标点（`.!?。！？…`）> 词间 gap > `gap_threshold` > 次级标点（`,;:，；：、`）> 超长硬切（记 warning）。贪心延长当前行，触限（字符/时长）时回看行内最佳断点。
+
+约束：单行 ≤ `max_chars`（英文按字符含空格）且 ≤ `max_duration` 秒；短于 `min_duration` 的行与相邻行合并（但不违反 max 约束）；单个超长词保留不拆。text 拼接：英文词间补空格，CJK 不补，标点符号前不补；撇号词 / 连字符词只在词边界下刀，不会被拆坏。cue 的 `words` 字段保留该行词级时间戳（修轴功能预留）。
 
 ## 5. 翻译层（translate/）
 
@@ -108,7 +110,7 @@ JSON schema：
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
 - 分三节：`asr` / `translate` / `ui`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（ForcedAligner ≤5min 留余量）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`。
+- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（ForcedAligner ≤5min 留余量）、`asr.language=null`（源语言，null=自动检测）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`。
 
 ## 8. 网页（server/ + frontend/）
 
