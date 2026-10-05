@@ -14,6 +14,11 @@
 - ``stage`` 取值：``"transcribe"`` / ``"translate"`` / ``"export"``；
 - 阶段开始 / 结束时 ``done=0, total=0``，信息在 ``message``；
 - 阶段进行中 ``done/total`` 为实际进度（转录=块数，翻译=cue 条数）。
+
+协作式取消：``progress_cb`` 可抛出 :class:`PipelineCancelledError`（网页层
+在回调里检查取消标志）。取消在回调边界生效（当前 cue / 块完成后停）；
+translate 阶段被取消时会先把已翻译的 cue 落盘再传播异常（stage 保持
+contexted，重跑自动跳过已翻译条目），``run_batch`` 遇取消停止整个批次。
 """
 
 from __future__ import annotations
@@ -49,6 +54,14 @@ _STAGE_ORDER = (Stage.EMPTY, Stage.TRANSCRIBED, Stage.CONTEXTED, Stage.TRANSLATE
 
 # progress_cb 协议：event dict，键固定为 media/stage/done/total/message
 ProgressCb = Callable[[dict], None]
+
+
+class PipelineCancelledError(RuntimeError):
+    """协作式取消：progress_cb 检查到取消标志后抛出，当前 cue / 块完成后停止。
+
+    translate 阶段被取消时 pipeline 会先落盘已翻译的 cue（stage 保持
+    contexted），重跑即断点续传；``run_batch`` 遇此异常停止整个批次。
+    """
 
 
 def _stage_reached(stage: Stage, target: Stage) -> bool:
@@ -200,6 +213,10 @@ def run_pipeline(
                 message="术语表待人工确认，已保存工程文件",
             )
             raise
+        except PipelineCancelledError:
+            # 协作式取消：已翻译的 cue 落盘（stage 保持 contexted），重跑续上
+            project.save(json_path)
+            raise
         project.save(json_path)
         _emit(progress_cb, media_path, "translate", message=f"翻译完成，已保存 {json_path}")
 
@@ -256,6 +273,10 @@ def run_batch(
                 backend=backend,
                 strategy=strategy,
             )
+        except PipelineCancelledError:
+            # 协作式取消：停止整个批次（run_pipeline 内已落盘当前文件进度）
+            logger.info("批量处理被取消，已完成 %d 个", len(result.succeeded))
+            raise
         except Exception as exc:  # noqa: BLE001 - 批量模式不中断，逐个记录
             logger.error("处理 %s 失败: %s", media_path, exc)
             result.failed.append((media_path, str(exc)))

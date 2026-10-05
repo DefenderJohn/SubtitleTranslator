@@ -11,6 +11,7 @@ from subtitle_translator.config import Config
 from subtitle_translator.models import Cue, GlossaryEntry, Stage, SubtitleProject
 from subtitle_translator.pipeline import (
     PIPELINE_STAGES,
+    PipelineCancelledError,
     default_srt_path,
     find_media_files,
     project_json_path,
@@ -296,3 +297,59 @@ class TestRunBatch:
     def test_empty_directory(self, cfg, tmp_path):
         result = run_batch(tmp_path, cfg)
         assert result.total == 0
+
+
+class TestCancellation:
+    """协作式取消：progress_cb 抛 PipelineCancelledError。"""
+
+    def test_translate_cancel_saves_progress(self, mocked_media, cfg, tmp_path):
+        """translate 阶段被取消：已翻译的 cue 落盘（stage 保持 contexted），重跑续上。"""
+        project = _transcribed_project(tmp_path)
+        project.cues.append(Cue(id=3, start=4.0, end=5.0, text="third line."))
+        project.save(tmp_path / "movie.sub.json")
+        media = tmp_path / "movie.mp4"
+        media.touch()
+
+        def cancel_at_second_cue(event):
+            if event["stage"] == "translate" and event["done"] == 2:
+                raise PipelineCancelledError("取消")
+
+        with pytest.raises(PipelineCancelledError):
+            run_pipeline(
+                media,
+                cfg,
+                auto_confirm=True,
+                strategy=_fake_strategy(),
+                progress_cb=cancel_at_second_cue,
+            )
+        loaded = SubtitleProject.load(tmp_path / "movie.sub.json")
+        assert loaded.stage == Stage.CONTEXTED  # 不谎报 translated
+        assert [c.translation for c in loaded.cues] == ["默认译文", "默认译文", None]
+
+        # 重跑断点续传：已翻译的跳过，只补第三条
+        client = FakeChatClient()
+        project = run_pipeline(media, cfg, auto_confirm=True, strategy=_fake_strategy(client))
+        assert project.stage == Stage.TRANSLATED
+        assert all(c.translation == "默认译文" for c in project.cues)
+        assert len(client.calls) == 1
+
+    def test_batch_cancel_stops(self, mocked_media, cfg, tmp_path):
+        (tmp_path / "a.mp4").touch()
+        (tmp_path / "b.mp4").touch()
+        backend = FakeBackend(cfg.asr)
+        backend.load()
+
+        def cancel_immediately(event):
+            raise PipelineCancelledError("取消")
+
+        with pytest.raises(PipelineCancelledError):
+            run_batch(
+                tmp_path,
+                cfg,
+                auto_confirm=True,
+                backend=backend,
+                strategy=_fake_strategy(),
+                progress_cb=cancel_immediately,
+            )
+        # 取消即停：第一个文件都没开始转录
+        assert not (tmp_path / "a.sub.json").exists()
