@@ -31,7 +31,7 @@ _STAGE_LABELS = {"transcribe": "转录", "translate": "翻译", "export": "导�
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="subtitle-translator",
-        description="音视频字幕转录与翻译工具（重构版）",
+        description="音视频字幕转录与翻译工具",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
