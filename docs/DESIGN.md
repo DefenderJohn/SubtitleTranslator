@@ -41,6 +41,40 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。业务逻
 
 音视频 → 转录 → 分段 →（摘要 + 术语表，人工确认检查点）→ 滑动窗口逐句翻译 → 导出 SRT / 双语 SRT。
 
+### 2.1 编排（pipeline.py）
+
+- 媒体文件发现 `find_media_files(path)`：path 是文件则校验扩展名后直接使用，是目录则递归查找（扩展名集合：flac/m4a/mp3/mp4/mpeg/mpga/oga/ogg/wav/webm + mkv/mov/avi/m4v）。
+- 工程文件约定：`xxx.mp4` → `xxx.sub.json`（同名同目录，`project_json_path`）；默认导出 `xxx.srt`（`default_srt_path`）。
+- `run_pipeline(media_path, cfg, *, stages=("transcribe","translate","export"), auto_confirm=False, bilingual=True, progress_cb=None, backend=None, strategy=None, from_json=False) -> SubtitleProject`：
+  - 已存在工程 JSON 则加载，按 `meta.stage` 跳过已完成阶段（断点续传核心）；**每完成一个阶段立即落盘**；
+  - 术语表人工确认检查点失败（`GlossaryNotConfirmedError`）时也先落盘（stage=contexted，摘要+术语表已保存）再抛出，确认后重跑即从逐句翻译续上；
+  - `stages=("transcribe", "export")` 即 transcribe-only：只转录并导出原文 SRT，不碰翻译端点；
+  - `from_json=True`：media_path 直接是已有 .sub.json，跳过转录、不接触媒体文件（重翻 / 调术语后重跑）；
+  - `backend` / `strategy` 可注入（测试、批量复用），为 None 时按 cfg 自建。
+- `run_batch(path, cfg, ...)`：遍历媒体文件逐个 `run_pipeline`，单文件失败记日志继续，最后返回 `BatchResult(succeeded, failed)` 汇总；传入的 backend / strategy 在全部文件间复用。
+- **进度回调协议**（网页 SSE 直接复用）：`progress_cb(event: dict)`，event 固定五键：
+  ```json
+  {"media": "/path/movie.mp4", "stage": "translate", "done": 12, "total": 100, "message": "翻译 12/100"}
+  ```
+  `stage` ∈ `transcribe` / `translate` / `export`；阶段开始与结束时 `done=0, total=0`（信息在 `message`），进行中 `done/total` 为实际进度（转录=块数，翻译=cue 条数）。
+
+### 2.2 CLI（cli.py）
+
+argparse 实现（stdlib，无新依赖），入口 `subtitle-translator`：
+
+```
+subtitle-translator run <路径> [--config config.yaml] [--transcribe-only] [--auto-confirm]
+                               [--no-bilingual] [--from-json] [--language en]
+subtitle-translator export <xxx.sub.json> [--bilingual] [-o out.srt]
+subtitle-translator glossary <xxx.sub.json> [--confirm-all] [--show]
+subtitle-translator config init [path]
+```
+
+- `run` 的路径是目录时自动走 `run_batch`；CLI 参数覆盖 yaml（如 `--language` 覆盖 `asr.language`）。
+- 配置体检：跑翻译前校验 `translate.model`（缺失时报错并给出 config init 指引）；`resolve_api_key` 为 None 时 stderr 警告并给出 `api_key_env` 配置指引（本地端点可忽略）。
+- 检查点失败时 stderr 打印后续操作指引（glossary --show / --confirm-all / --auto-confirm）。
+- 进度在 stderr 简单打印（不引 tqdm，网页才是主交互）。
+
 ## 3. 转录层（transcribe.py + media.py）
 
 - 使用官方 `qwen-asr` Python 包（`Qwen3ASRModel`）：
@@ -125,7 +159,7 @@ JSON schema：
 
 ## 9. 断点续传
 
-每阶段产物落盘 JSON，重跑时跳过已完成阶段（由 `stage` 字段驱动）。
+每阶段产物落盘 JSON（`xxx.sub.json`），重跑时跳过已完成阶段（由 `stage` 字段驱动）。检查点中断（术语表待确认）也会先落盘 stage=contexted，确认术语后重跑即从逐句翻译续上；崩溃重启不丢已完成阶段的进度。
 
 ## 10. 依赖策略
 

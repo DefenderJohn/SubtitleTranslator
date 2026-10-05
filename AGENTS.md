@@ -18,9 +18,10 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 │   ├── translate/              # 翻译层：OpenAI 兼容端点，三步走，可插拔策略
 │   │                           #   client.py(SDK封装+退避) prompts.py context.py
 │   │                           #   glossary.py strategy.py(ABC+SlidingWindow)
-│   ├── pipeline.py             # 流水线编排 + 断点续传（stage 驱动）
+│   ├── pipeline.py             # 流水线编排 + 断点续传（stage 驱动）+ run_batch 批量；
+│   │                           #   进度回调协议 progress_cb({media,stage,done,total,message})
 │   ├── srt.py                  # SRT / 双语 SRT 导出
-│   ├── cli.py                  # CLI 薄壳
+│   ├── cli.py                  # CLI 薄壳（argparse：run / export / glossary / config init）
 │   └── server/                 # FastAPI 薄壳（REST + SSE + Range 视频流）
 ├── frontend/                   # React + Ant Design（Vite），阶段 7 占位
 ├── tests/                      # pytest
@@ -37,3 +38,4 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 - **文档同步**：代码行为变化时同步更新 docs/DESIGN.md（以及本文件的结构说明）。
 - **依赖**：核心保持轻量（pyyaml + openai）；torch / vllm / qwen-asr 等只放 optional extras，版本只钉下界。
 - 占位模块只写 docstring 说明职责，业务实现按阶段逐步填充。
+- **进度回调协议**：`progress_cb({"media", "stage", "done", "total", "message"})`（pipeline 层统一定义，网页 SSE 直接复用；transcribe / translate 内层的 `(done, total)` 回调由 pipeline 包装成该协议）。
