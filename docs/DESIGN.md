@@ -98,8 +98,10 @@ JSON schema：
 }
 ```
 
-- `stage` 取值：`transcribed` → `contexted` → `translated`，驱动断点续传。
+- `stage` 取值：`empty`（初始态，尚未转录）→ `transcribed` → `contexted` → `translated`，驱动断点续传。
 - `words` 词级时间戳为未来功能（波形修轴、剪辑）预留。
+- 序列化约定：缺字段给默认值；`version` 与当前 SCHEMA_VERSION 不匹配时抛出 `SchemaVersionError`；非法 `stage` 抛 `ValueError`。
+- SRT 导出语义：双语导出译文在上、原文在下（与旧版一致）；单语导出优先译文、无译文退化为原文。
 
 ## 7. 配置（config.py）
 
