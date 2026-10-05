@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。设计定案见 [docs/DESIGN.md](docs/DESIGN.md)，所有开发必须以该文档为依据。
+SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。设计定案见 [docs/DESIGN.md](docs/DESIGN.md)，所有开发必须以该文档为依据。
 
 ## 项目结构
 
@@ -40,7 +40,6 @@ SubtitleTranslator 重构版：音视频字幕转录与翻译工具。core 纯 P
 - **密钥**：绝不提交 api_key；配置中用 `api_key_env` 环境变量引用。
 - **文档同步**：代码行为变化时同步更新 docs/DESIGN.md（以及本文件的结构说明）。
 - **依赖**：核心保持轻量（pyyaml + openai）；torch / vllm / qwen-asr 等只放 optional extras，版本只钉下界。
-- 占位模块只写 docstring 说明职责，业务实现按阶段逐步填充。
 - **进度回调协议**：`progress_cb({"media", "stage", "done", "total", "message"})`（pipeline 层统一定义，网页 SSE 直接复用；transcribe / translate 内层的 `(done, total)` 回调由 pipeline 包装成该协议）。
 - **协作式取消**：`progress_cb` 抛 `pipeline.PipelineCancelledError` 即取消（当前 cue/块完成后停，translate 阶段会先落盘已翻译 cue）；网页层在回调里检查任务取消标志。
 - **server 层**：fastapi/uvicorn/httpx 在 `web`/`dev` extras，延迟导入保持 core 可独立用；业务逻辑不写在 server（薄壳，只协议转换）；SSE 事件 = pipeline 五键 + task_id + status。

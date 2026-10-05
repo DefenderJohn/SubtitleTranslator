@@ -1,10 +1,8 @@
-# SubtitleTranslator（重构中）
+# SubtitleTranslator
 
-音视频字幕转录与翻译工具。
+音视频字幕转录与翻译工具。2024 年初的旧版本（openai-whisper 转录 + 本地 ChatGLM3-6B 逐条翻译）已被本架构取代（旧代码见 git 历史）。
 
-> **本项目正在整体重构。** 2024 年初的旧版本（openai-whisper 转录 + 本地 ChatGLM3-6B 逐条翻译）已被新架构取代。
-
-## 新架构
+## 架构
 
 core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）：
 
@@ -15,15 +13,15 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）：
 
 完整设计定案见 [docs/DESIGN.md](docs/DESIGN.md)，环境摸底见 [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)，开发约定见 [AGENTS.md](AGENTS.md)。
 
-## 安装与测试（骨架阶段）
+## 安装与测试
 
 ```bash
-pip install -e .          # 核心依赖（仅 pyyaml）
+pip install -e .          # 核心依赖（pyyaml + openai）
 pip install -e .[dev]     # 含 pytest
 python -m pytest
 ```
 
-重依赖按环境单独安装：`pip install -e .[asr]`（qwen-asr / torch / vllm）、`pip install -e .[web]`（FastAPI / uvicorn）。ffmpeg 为硬依赖，需系统级安装。
+重依赖按环境单独安装：`pip install -e .[asr]`（qwen-asr / torch / vllm / transformers）、`pip install -e .[web]`（FastAPI / uvicorn）。ffmpeg 为硬依赖，需系统级安装。
 
 ## 命令行使用
 

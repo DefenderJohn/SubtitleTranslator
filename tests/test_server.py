@@ -491,10 +491,14 @@ class TestMediaAndVideo:
 
 
 class TestStaticHosting:
-    def test_placeholder_without_dist(self, client):
-        resp = client.get("/")
-        assert resp.status_code == 200
-        assert "前端尚未构建" in resp.text
+    def test_placeholder_without_dist(self, config_path, tmp_path):
+        # 显式指向不存在的 dist，避免受仓库里真实 frontend/dist 是否构建影响
+        with TestClient(
+            create_app(config_path=config_path, frontend_dist=tmp_path / "no-dist")
+        ) as client:
+            resp = client.get("/")
+            assert resp.status_code == 200
+            assert "前端尚未构建" in resp.text
 
     def test_serves_dist_when_present(self, config_path, tmp_path):
         dist = tmp_path / "dist"

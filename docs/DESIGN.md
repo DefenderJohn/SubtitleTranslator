@@ -68,6 +68,7 @@ subtitle-translator run <路径> [--config config.yaml] [--transcribe-only] [--a
                                [--no-bilingual] [--from-json] [--language en]
 subtitle-translator export <xxx.sub.json> [--bilingual] [-o out.srt]
 subtitle-translator glossary <xxx.sub.json> [--confirm-all] [--show]
+subtitle-translator serve [--config config.yaml] [--host] [--port]
 subtitle-translator config init [path]
 ```
 
@@ -99,7 +100,7 @@ subtitle-translator config init [path]
 
 ## 5. 翻译层（translate/）
 
-- 接口：OpenAI 兼容端点，配置仅四字段：`base_url` / `api_key` / `model` / `temperature`。本地 vLLM / Ollama 也走同一接口。HTTP 用官方 `openai` SDK 的 chat.completions（非 streaming），SDK 自重试关闭，由 `client.py` 统一做指数退避（429 / 5xx / 超时 / 连接错误，最多 `max_retries` 次，超时 `request_timeout` 默认 120s）。
+- 接口：OpenAI 兼容端点，端点连接配置为四字段：`base_url` / `api_key`（或 `api_key_env`）/ `model` / `temperature`（其余翻译行为配置见 §7）。本地 vLLM / Ollama 也走同一接口。HTTP 用官方 `openai` SDK 的 chat.completions（非 streaming），SDK 自重试关闭，由 `client.py` 统一做指数退避（429 / 5xx / 超时 / 连接错误，最多 `max_retries` 次，超时 `request_timeout` 默认 120s）。
 - 模块拆分：`client.py`（SDK 封装+退避）、`prompts.py`（prompt 模板）、`context.py`（摘要）、`glossary.py`（术语表提取与解析）、`strategy.py`（策略 ABC + 实现）。
 - 三步走（`SlidingWindowStrategy.translate(project, cfg, progress_cb=None, auto_confirm=False)` 编排，断点续传时已完成步骤自动跳过）：
   1. **摘要**：整片字幕一次调用生成摘要，存入 `project.meta.summary`；全文超过 `SUMMARY_MAX_CHARS`（常量，100K 字符）时按 cue 边界分块 map-reduce（逐块摘要→合并摘要）；
