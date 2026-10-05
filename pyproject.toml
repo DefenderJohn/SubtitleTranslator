@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "subtitle-translator"
+version = "0.1.0"
+description = "音视频字幕转录与翻译工具（重构版）：core 库 + CLI / Web 双壳"
+readme = "readme.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# 转录层重依赖，按环境单独安装；版本只钉下界
+asr = [
+    "qwen-asr>=0.1",
+    "torch>=2.2",
+    "vllm>=0.6",
+    "transformers>=4.45",
+]
+web = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+subtitle-translator = "subtitle_translator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
