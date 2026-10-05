@@ -6,6 +6,7 @@
 - ``run``     跑流水线（转录 → 翻译 → 导出 SRT），断点续传
 - ``export``  从已有 .sub.json 导出 SRT
 - ``glossary`` 查看 / 确认术语表（人工确认检查点）
+- ``serve``   启动网页服务（FastAPI + SSE，需 web extra）
 - ``config init`` 生成默认 config.yaml
 """
 
@@ -70,6 +71,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--confirm-all", action="store_true", help="确认全部条目并保存（confirmed=true）"
     )
     glossary.add_argument("--show", action="store_true", help="打印术语表")
+
+    serve = sub.add_parser("serve", help="启动网页服务（FastAPI + SSE，需 web extra）")
+    serve.add_argument(
+        "--config",
+        default=DEFAULT_CONFIG_PATH,
+        help=f"config.yaml 路径（默认 {DEFAULT_CONFIG_PATH}）",
+    )
+    serve.add_argument("--host", help="监听地址（默认取 ui.host 配置）")
+    serve.add_argument("--port", type=int, help="监听端口（默认取 ui.port 配置）")
 
     config = sub.add_parser("config", help="配置管理")
     config_sub = config.add_subparsers(dest="config_command", required=True)
@@ -232,6 +242,27 @@ def _cmd_config_init(args) -> int:
     return 0
 
 
+def _cmd_serve(args) -> int:
+    cfg = load_config(args.config)
+    host = args.host or cfg.ui.host
+    port = args.port or cfg.ui.port
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "错误：未安装 uvicorn。网页服务依赖 web extra，请先执行\n"
+            "  pip install -e .[web]",
+            file=sys.stderr,
+        )
+        return 1
+    from .server import create_app
+
+    app = create_app(config_path=args.config)
+    print(f"网页服务启动于 http://{host}:{port}（API 文档 /docs）", file=sys.stderr)
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run":
@@ -240,6 +271,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _cmd_export(args)
     if args.command == "glossary":
         return _cmd_glossary(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
     if args.command == "config":
         return _cmd_config_init(args)
     return 2  # pragma: no cover - argparse required=True 保证不可达
