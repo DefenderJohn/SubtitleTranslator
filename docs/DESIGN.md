@@ -107,7 +107,8 @@ JSON schema：
 
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
 - 分三节：`asr` / `translate` / `ui`。
-- `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库。
+- `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
+- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（ForcedAligner ≤5min 留余量）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`。
 
 ## 8. 网页（server/ + frontend/）
 
