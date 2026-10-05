@@ -8,7 +8,7 @@ Schema 字段：
 - models{asr, aligner, translator}
 - summary
 - glossary[{src, dst, count, confirmed}]
-- cues[{id, start, end, text, translation, words[{text, start, end}]}]
+- cues[{id, start, end, text, translation, words[{text, start, end}], flags}]
 - stage（empty -> transcribed -> contexted -> translated，驱动断点续传）
 """
 
@@ -72,6 +72,9 @@ class Cue:
     text: str
     translation: Union[str, None] = None
     words: list[WordTiming] = field(default_factory=list)
+    # 翻译层标记，如 "glossary_miss:<src>"（术语后校验未命中）、
+    # "translation_failed"（重试后仍失败，保留原文占位）
+    flags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +84,7 @@ class Cue:
             "text": self.text,
             "translation": self.translation,
             "words": [w.to_dict() for w in self.words],
+            "flags": list(self.flags),
         }
 
     @classmethod
@@ -93,6 +97,7 @@ class Cue:
             text=str(data.get("text", "")),
             translation=data.get("translation"),
             words=[WordTiming.from_dict(w) for w in words],
+            flags=[str(f) for f in data.get("flags") or []],
         )
 
 

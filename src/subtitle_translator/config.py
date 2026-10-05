@@ -48,6 +48,9 @@ class TranslateConfig:
     glossary_max_entries: int = 50
     additional_prompt: str = "翻译当前字幕到简体中文"
     target_language: str = "简体中文"
+    request_timeout: float = 120.0  # 单次 HTTP 请求超时（秒）
+    max_retries: int = 4  # HTTP 层对 429/5xx/超时的指数退避重试次数
+    glossary_max_retries: int = 3  # 术语表解析失败的重试次数（换提示/降批）
 
 
 @dataclass

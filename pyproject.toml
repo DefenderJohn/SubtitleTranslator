@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "pyyaml>=6.0",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
