@@ -1,4 +1,4 @@
-"""翻译层测试：全部 mock client.chat，不打真实 API。"""
+"""翻译层测试：全部 fake client.chat_json，不打真实 API。"""
 
 from __future__ import annotations
 
@@ -11,39 +11,56 @@ from subtitle_translator.translate import (
     ChatError,
     GlossaryExtractError,
     GlossaryNotConfirmedError,
+    GlossaryParseError,
+    InvalidModelJsonError,
     SlidingWindowStrategy,
-    parse_glossary,
+    parse_glossary_payload,
 )
 from subtitle_translator.translate import context, prompts
-from subtitle_translator.translate.strategy import _clean_output
 
-GLOSSARY_TEXT = "Erebus | 厄瑞玻斯 | 5\nNyra | 妮拉 | 3"
+GLOSSARY_PAYLOAD = {
+    "entries": [
+        {"src": "Erebus", "dst": "厄瑞玻斯", "count": 5},
+        {"src": "Nyra", "dst": "妮拉", "count": 3},
+    ]
+}
 
 
 class FakeClient:
-    """按 system prompt 内容路由的 fake chat 客户端，记录全部调用。"""
+    """按 schema name 路由的 fake chat_json 客户端，记录全部调用。
+
+    术语表 / 逐句翻译的响应可用 script 队列编排：队列元素为 dict 原样返回，
+    为异常实例则抛出（模拟 InvalidModelJsonError 等）。
+    """
 
     def __init__(self, translations=None, glossary_script=None, summary="测试摘要"):
-        self.calls: list[tuple[list[dict], float | None]] = []
+        self.calls: list[tuple[list[dict], str, float | None]] = []
         self.summary = summary
         # 逐句翻译：callable(messages) -> str，或固定字符串
         self.translations = "默认译文" if translations is None else translations
-        # 术语表：响应队列（依次消费），缺省返回 GLOSSARY_TEXT
+        # 术语表：响应队列（依次消费），缺省返回 GLOSSARY_PAYLOAD
         self.glossary_script = list(glossary_script) if glossary_script else None
 
-    def chat(self, messages, temperature=None):
-        self.calls.append(([dict(m) for m in messages], temperature))
-        system = messages[0]["content"]
-        if "内容摘要" in system or "部分内容" in system or "合并为一份全片摘要" in system:
-            return self.summary
-        if "术语管理助手" in system:
-            if self.glossary_script is not None:
-                return self.glossary_script.pop(0)
-            return GLOSSARY_TEXT
+    def chat_json(self, messages, *, schema, name, temperature=None):
+        self.calls.append(([dict(m) for m in messages], name, temperature))
+        if name == "summary":
+            return {"summary": self.summary}
+        if name == "glossary":
+            outcome = (
+                self.glossary_script.pop(0)
+                if self.glossary_script is not None
+                else GLOSSARY_PAYLOAD
+            )
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         # 逐句翻译
         if callable(self.translations):
-            return self.translations(messages)
-        return self.translations
+            return {"translation": self.translations(messages)}
+        return {"translation": self.translations}
+
+    def glossary_calls(self) -> list:
+        return [c for c in self.calls if c[1] == "glossary"]
 
 
 def make_cfg(**overrides) -> TranslateConfig:
@@ -100,13 +117,21 @@ def test_full_flow():
     assert project.meta.models.translator == "test-model"
 
 
+def test_full_flow_uses_json_schema():
+    """三步调用都带对应 JSON schema。"""
+    project = make_project(1)
+    client = FakeClient()
+    SlidingWindowStrategy(client=client).translate(project, make_cfg(), auto_confirm=True)
+    names = [name for _, name, _ in client.calls]
+    assert names == ["summary", "glossary", "translation"]
+
+
 def test_resume_skips_summary_and_glossary():
     """已有摘要+术语表（已确认）时不再调用前两步，直接逐句翻译。"""
     project = make_project(2, with_context=True)
     client = FakeClient()
     SlidingWindowStrategy(client=client).translate(project, make_cfg())
-    systems = [c[0][0]["content"] for c in client.calls]
-    assert all("专业字幕翻译员" in s for s in systems)
+    assert [name for _, name, _ in client.calls] == ["translation", "translation"]
 
 
 def test_resume_skips_translated_cues():
@@ -121,43 +146,79 @@ def test_resume_skips_translated_cues():
 # ------------------------------------------------------------------ 术语表
 
 
-def test_parse_glossary():
-    entries = parse_glossary("Erebus | 厄瑞玻斯 | 5\n\n坏行\nNyra | 妮拉 | 3")
+def test_parse_glossary_payload():
+    entries = parse_glossary_payload(GLOSSARY_PAYLOAD)
     assert [(e.src, e.dst, e.count) for e in entries] == [
         ("Erebus", "厄瑞玻斯", 5),
         ("Nyra", "妮拉", 3),
     ]
-    with pytest.raises(Exception):
-        parse_glossary("完全无法解析的输出")
 
 
-def test_glossary_parse_retry_then_success():
-    """术语表解析失败 → 换提示重试 → 成功。"""
+def test_parse_glossary_payload_skips_malformed_items():
+    """缺 src/dst 的条目跳过；count 非法时按 0；多余字段忽略。"""
+    entries = parse_glossary_payload(
+        {
+            "entries": [
+                {"src": "Erebus", "dst": "厄瑞玻斯", "count": "5", "extra": 1},
+                {"src": "", "dst": "缺原文"},
+                {"dst": "缺 src"},
+                "不是对象",
+                {"src": "Nyra", "dst": "妮拉"},
+            ]
+        }
+    )
+    assert [(e.src, e.dst, e.count) for e in entries] == [
+        ("Erebus", "厄瑞玻斯", 5),
+        ("Nyra", "妮拉", 0),
+    ]
+
+
+def test_parse_glossary_payload_no_entries_raises():
+    with pytest.raises(GlossaryParseError):
+        parse_glossary_payload({"wrong_key": []})
+    with pytest.raises(GlossaryParseError):
+        parse_glossary_payload({"entries": []})
+
+
+def test_glossary_invalid_payload_retries_then_success():
+    """术语表 payload 无效 → 重试 → 成功。"""
     project = make_project(1)
-    client = FakeClient(glossary_script=["模型说了一堆废话", GLOSSARY_TEXT])
+    client = FakeClient(glossary_script=[{"废话": True}, GLOSSARY_PAYLOAD])
     SlidingWindowStrategy(client=client).translate(
         project, make_cfg(), auto_confirm=True
     )
-    glossary_calls = [
-        c for c in client.calls if "术语管理助手" in c[0][0]["content"]
-    ]
-    assert len(glossary_calls) == 2
-    # 第二次调用带严格格式提示
-    assert "严格遵守输出格式" in glossary_calls[1][0][1]["content"]
+    assert len(client.glossary_calls()) == 2
     assert [g.src for g in project.glossary] == ["Erebus", "Nyra"]
+
+
+def test_glossary_invalid_json_retries():
+    """端点返回非法 JSON（InvalidModelJsonError）同样计入重试。"""
+    project = make_project(1)
+    client = FakeClient(
+        glossary_script=[InvalidModelJsonError("not json"), GLOSSARY_PAYLOAD]
+    )
+    SlidingWindowStrategy(client=client).translate(
+        project, make_cfg(), auto_confirm=True
+    )
+    assert len(client.glossary_calls()) == 2
 
 
 def test_glossary_total_failure_raises():
     """术语表重试耗尽仍无法解析 → 抛 GlossaryExtractError。"""
     project = make_project(1)
     cfg = make_cfg(glossary_max_retries=3)
-    client = FakeClient(glossary_script=["废话"] * 10)
+    client = FakeClient(glossary_script=[{"废话": True}] * 10)
     with pytest.raises(GlossaryExtractError):
         SlidingWindowStrategy(client=client).translate(project, cfg, auto_confirm=True)
-    glossary_calls = [
-        c for c in client.calls if "术语管理助手" in c[0][0]["content"]
-    ]
-    assert len(glossary_calls) == 3
+    assert len(client.glossary_calls()) == 3
+
+
+def test_glossary_prompt_mentions_json_schema():
+    messages = prompts.glossary_messages("摘要", "正文", max_entries=10, target_language="简体中文")
+    assert '"entries"' in messages[1]["content"]
+    schema = prompts.GLOSSARY_RESPONSE_SCHEMA
+    item_props = schema["properties"]["entries"]["items"]["properties"]
+    assert set(item_props) == {"src", "dst", "count"}
 
 
 def test_unconfirmed_glossary_blocks_translation():
@@ -180,7 +241,7 @@ def test_auto_confirm_sets_all_confirmed():
     assert all(g.confirmed for g in project.glossary)
 
 
-# ------------------------------------------------------------------ 逐句翻译防御
+# ------------------------------------------------------------------ 逐句翻译异常检测
 
 
 def test_empty_output_retries_then_placeholder():
@@ -194,20 +255,29 @@ def test_empty_output_retries_then_placeholder():
     assert len(client.calls) == 3  # 1 次首发 + 2 次重试
 
 
+def test_missing_translation_field_treated_as_empty():
+    """payload 缺 translation 字段按空输出处理，走重试/占位路径。"""
+
+    class MissingFieldClient(FakeClient):
+        def chat_json(self, messages, *, schema, name, temperature=None):
+            self.calls.append(([dict(m) for m in messages], name, temperature))
+            return {}
+
+    project = make_project(1, with_context=True)
+    client = MissingFieldClient()
+    SlidingWindowStrategy(client=client).translate(project, make_cfg())
+    cue = project.cues[0]
+    assert cue.translation == cue.text
+    assert "translation_failed" in cue.flags
+
+
 def test_second_retry_lowers_temperature():
     project = make_project(1, with_context=True)
     client = FakeClient(translations="")
     SlidingWindowStrategy(client=client).translate(project, make_cfg(temperature=0.8))
-    temps = [t for _, t in client.calls]
+    temps = [t for _, _, t in client.calls]
     assert temps[0] == 0.8 and temps[1] == 0.8
     assert temps[2] == pytest.approx(0.4)  # 第二次重试降 temperature
-
-
-def test_number_prefix_stripped():
-    project = make_project(1, with_context=True)
-    client = FakeClient(translations="12. 译文本体")
-    SlidingWindowStrategy(client=client).translate(project, make_cfg())
-    assert project.cues[0].translation == "译文本体"
 
 
 def test_suspicious_length_triggers_retry():
@@ -221,10 +291,18 @@ def test_suspicious_length_triggers_retry():
     assert len(client.calls) == 2
 
 
-def test_clean_output():
-    assert _clean_output("  [12] 你好 \n") == "你好"
-    assert _clean_output("3、你好") == "你好"
-    assert _clean_output("") == ""
+def test_translation_field_whitespace_stripped():
+    project = make_project(1, with_context=True)
+    client = FakeClient(translations="  译文本体 \n")
+    SlidingWindowStrategy(client=client).translate(project, make_cfg())
+    assert project.cues[0].translation == "译文本体"
+
+
+def test_translation_system_mentions_json_output():
+    system = prompts.translation_system(make_cfg(), [], "摘要")
+    assert '"translation"' in system
+    schema = prompts.TRANSLATION_RESPONSE_SCHEMA
+    assert schema["required"] == ["translation"]
 
 
 # ------------------------------------------------------------------ prompt 组装
@@ -237,7 +315,7 @@ def test_messages_assembly():
     cfg = make_cfg(history_count=2, forward_count=1)
     SlidingWindowStrategy(client=client).translate(project, cfg)
 
-    last_messages, _ = client.calls[-1]  # 第 4 条 cue 的调用
+    last_messages, _, _ = client.calls[-1]  # 第 4 条 cue 的调用
     system = last_messages[0]["content"]
     assert "已有摘要" in system
     assert "Erebus | 厄瑞玻斯" in system
@@ -255,7 +333,7 @@ def test_messages_assembly():
     final_user = last_messages[5]["content"]
     assert project.cues[3].text in final_user
     # 前瞻用第 3 条的调用检查：应含第 4 条原文且标注不翻译
-    third_messages, _ = client.calls[2]
+    third_messages, _, _ = client.calls[2]
     third_user = third_messages[-1]["content"]
     assert project.cues[3].text in third_user  # 前瞻：第 4 条原文
     assert "不要翻译" in third_user
@@ -288,7 +366,29 @@ def test_glossary_hit_no_flag():
     assert project.cues[0].flags == []
 
 
-# ------------------------------------------------------------------ 摘要分块
+# ------------------------------------------------------------------ 摘要
+
+
+def test_summary_from_json_field():
+    project = make_project(2)
+    client = FakeClient(summary="一段英文演讲。")
+    SlidingWindowStrategy(client=client).translate(project, make_cfg(), auto_confirm=True)
+    assert project.meta.summary == "一段英文演讲。"
+
+
+def test_summary_missing_field_raises():
+    """摘要 payload 缺 summary 字段 → InvalidModelJsonError。"""
+    project = make_project(1)
+
+    class BadSummaryClient(FakeClient):
+        def chat_json(self, messages, *, schema, name, temperature=None):
+            self.calls.append(([dict(m) for m in messages], name, temperature))
+            return {}
+
+    with pytest.raises(InvalidModelJsonError):
+        SlidingWindowStrategy(client=BadSummaryClient()).translate(
+            project, make_cfg(), auto_confirm=True
+        )
 
 
 def test_summary_chunked_map_reduce(monkeypatch):
@@ -311,6 +411,7 @@ def test_summary_chunked_map_reduce(monkeypatch):
     assert len(chunk_calls) >= 2
     assert len(merge_calls) == 1
     assert "分段摘要 1" in merge_calls[0][0][1]["content"]
+    assert all(c[1] == "summary" for c in chunk_calls + merge_calls)
 
 
 # ------------------------------------------------------------------ HTTP 重试
@@ -332,7 +433,7 @@ def test_429_backoff_retry():
     client = _make_client(sleeps)
     attempts = iter([_FakeHttpError(429), _FakeHttpError(500), "成功"])
 
-    def fake_create(messages, temperature):
+    def fake_create(messages, temperature, response_format=None):
         outcome = next(attempts)
         if isinstance(outcome, Exception):
             raise outcome
@@ -348,7 +449,7 @@ def test_retry_exhaustion_raises_chat_error():
     client = _make_client(sleeps)
     client.cfg.max_retries = 2
 
-    def always_fail(messages, temperature):
+    def always_fail(messages, temperature, response_format=None):
         raise _FakeHttpError(429)
 
     client._create = always_fail
@@ -361,7 +462,7 @@ def test_non_retryable_error_raises_immediately():
     sleeps: list[float] = []
     client = _make_client(sleeps)
 
-    def bad_request(messages, temperature):
+    def bad_request(messages, temperature, response_format=None):
         raise _FakeHttpError(400)
 
     client._create = bad_request
@@ -379,7 +480,7 @@ def test_timeout_is_retryable():
     request = httpx.Request("POST", "http://fake/v1/chat/completions")
     attempts = iter([APITimeoutError(request), "成功"])
 
-    def flaky(messages, temperature):
+    def flaky(messages, temperature, response_format=None):
         outcome = next(attempts)
         if isinstance(outcome, Exception):
             raise outcome
@@ -388,3 +489,69 @@ def test_timeout_is_retryable():
     client._create = flaky
     assert client.chat([{"role": "user", "content": "hi"}]) == "成功"
     assert sleeps == [1.0]
+
+
+# ------------------------------------------------------------------ chat_json 结构化输出
+
+
+def test_chat_json_attaches_response_format_and_parses():
+    """chat_json 把 json_schema response_format 传给 SDK，返回值解析为 dict。"""
+    client = _make_client([])
+    captured: list[dict] = []
+
+    def fake_create(messages, temperature, response_format=None):
+        captured.append(response_format)
+        return '{"translation": "你好"}'
+
+    client._create = fake_create
+    data = client.chat_json(
+        [{"role": "user", "content": "hi"}],
+        schema=prompts.TRANSLATION_RESPONSE_SCHEMA,
+        name="translation",
+    )
+    assert data == {"translation": "你好"}
+    assert captured[0] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "translation",
+            "schema": prompts.TRANSLATION_RESPONSE_SCHEMA,
+        },
+    }
+
+
+def test_chat_json_invalid_json_raises():
+    client = _make_client([])
+    client._create = lambda messages, temperature, response_format=None: "不是 JSON"
+    with pytest.raises(InvalidModelJsonError):
+        client.chat_json([], schema={}, name="translation")
+
+
+def test_chat_json_non_object_json_raises():
+    client = _make_client([])
+    client._create = lambda messages, temperature, response_format=None: '["数组"]'
+    with pytest.raises(InvalidModelJsonError):
+        client.chat_json([], schema={}, name="translation")
+
+
+def test_chat_400_with_response_format_hints_json_schema():
+    """带 response_format 的 400 错误提示端点需支持 json_schema。"""
+    client = _make_client([])
+
+    def bad_request(messages, temperature, response_format=None):
+        raise _FakeHttpError(400)
+
+    client._create = bad_request
+    with pytest.raises(ChatError, match="response_format json_schema"):
+        client.chat([], response_format={"type": "json_schema", "json_schema": {}})
+
+
+def test_chat_400_without_response_format_has_no_hint():
+    client = _make_client([])
+
+    def bad_request(messages, temperature, response_format=None):
+        raise _FakeHttpError(400)
+
+    client._create = bad_request
+    with pytest.raises(ChatError) as exc_info:
+        client.chat([])
+    assert "response_format" not in str(exc_info.value)

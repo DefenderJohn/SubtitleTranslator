@@ -1,10 +1,8 @@
-"""翻译层 prompt 模板。
+"""翻译层 prompt 模板与结构化输出 schema。
 
-三类 prompt：
-- 摘要（含长片分块 map-reduce 的分块摘要与合并摘要）；
-- 术语表提取（要求模型按 ``原文 | 译文 | 出现次数`` 固定格式输出）；
-- 逐句翻译（system 注入角色 + 目标语言 + 术语表 + 摘要 + additional_prompt；
-  历史对拼成 user/assistant 消息对，前瞻原文在 user 里明确标注不翻译）。
+三类 prompt（摘要 / 术语表 / 逐句翻译）全部走 JSON schema 结构化输出
+（``client.chat_json``），每个模板旁边是对应的 response schema——prompt
+里的格式说明与 schema 是同一份约定的两份表达，改动时必须同步。
 """
 
 from __future__ import annotations
@@ -14,23 +12,31 @@ from ..models import GlossaryEntry
 
 # ---------------------------------------------------------------- 摘要
 
+SUMMARY_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}},
+    "required": ["summary"],
+    "additionalProperties": False,
+}
+
 SUMMARY_SYSTEM = (
     "你是一名专业的影视内容分析助手。请阅读用户给出的整片字幕文本，"
     "输出一份简洁的内容摘要，供后续翻译参考。摘要需涵盖：作品体裁与题材、"
     "语言风格与语域（正式/口语/术语密度）、主要人物及其关系、关键专有名词。"
-    "直接输出摘要正文，不要输出标题或额外说明。"
+    '以 JSON 对象 {"summary": "摘要正文"} 输出，摘要正文不要包含标题或额外说明。'
 )
 
 SUMMARY_CHUNK_SYSTEM = (
     "你是一名专业的影视内容分析助手。用户给出的是一部作品字幕的【部分内容】，"
     "请对这部分做简要摘要：情节进展、出场人物、出现的专有名词与术语。"
-    "直接输出摘要正文，不要输出标题或额外说明。"
+    '以 JSON 对象 {"summary": "摘要正文"} 输出，摘要正文不要包含标题或额外说明。'
 )
 
 SUMMARY_MERGE_SYSTEM = (
     "你是一名专业的影视内容分析助手。用户给出的是一部作品各分段字幕摘要的集合，"
     "请合并为一份全片摘要，涵盖：作品体裁与题材、语言风格与语域、"
-    "主要人物及其关系、关键专有名词。直接输出摘要正文，不要输出标题或额外说明。"
+    "主要人物及其关系、关键专有名词。"
+    '以 JSON 对象 {"summary": "摘要正文"} 输出，摘要正文不要包含标题或额外说明。'
 )
 
 
@@ -58,16 +64,31 @@ def summary_merge_messages(partials: list[str]) -> list[dict[str, str]]:
 
 # ---------------------------------------------------------------- 术语表
 
+GLOSSARY_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "entries": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "src": {"type": "string"},
+                    "dst": {"type": "string"},
+                    "count": {"type": "integer"},
+                },
+                "required": ["src", "dst", "count"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["entries"],
+    "additionalProperties": False,
+}
+
 GLOSSARY_SYSTEM = (
     "你是一名专业的字幕翻译术语管理助手。请从用户给出的全片字幕中，"
     "提取高频出现的专有名词（人名、地名、组织名、作品特有术语等），"
     "并给出目标语言的规范译法。"
-)
-
-# 解析失败重试时追加的严格提示（换提示）
-GLOSSARY_STRICT_SUFFIX = (
-    "\n\n【重要】上一次输出格式无法解析。请严格遵守输出格式：每行恰好为 "
-    "\"原文 | 译文 | 出现次数\"，用竖线分隔，不要输出编号、表头、空行以外的任何内容。"
 )
 
 
@@ -77,18 +98,15 @@ def glossary_messages(
     *,
     max_entries: int,
     target_language: str,
-    strict: bool = False,
 ) -> list[dict[str, str]]:
-    """术语表提取 prompt。strict=True 时追加严格格式说明（重试用）。"""
+    """术语表提取 prompt（输出由 GLOSSARY_RESPONSE_SCHEMA 约束）。"""
     user = (
         f"目标语言：{target_language}\n"
-        f"输出格式：每行一条，严格为 \"原文 | 译文 | 出现次数\"，"
-        f"按出现次数降序，最多 {max_entries} 条，不要输出表头、编号或任何解释。\n\n"
+        '输出格式：JSON 对象 {"entries": [{"src": 原文, "dst": 译文, "count": 出现次数}]}，'
+        f"按出现次数降序，最多 {max_entries} 条。\n\n"
         f"全片摘要：\n{summary or '（无）'}\n\n"
         f"全片字幕文本：\n{text}"
     )
-    if strict:
-        user += GLOSSARY_STRICT_SUFFIX
     return [
         {"role": "system", "content": GLOSSARY_SYSTEM},
         {"role": "user", "content": user},
@@ -96,6 +114,13 @@ def glossary_messages(
 
 
 # ---------------------------------------------------------------- 逐句翻译
+
+TRANSLATION_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {"translation": {"type": "string"}},
+    "required": ["translation"],
+    "additionalProperties": False,
+}
 
 
 def translation_system(
@@ -106,7 +131,8 @@ def translation_system(
     """system prompt：角色 + 目标语言 + 术语表 + 摘要 + additional_prompt。"""
     parts = [
         f"你是一名专业字幕翻译员，请将字幕原文翻译成{cfg.target_language}。",
-        "要求：只输出译文本身，不要输出编号、原文、解释或任何额外内容；"
+        '要求：以 JSON 对象 {"translation": "译文"} 输出，translation 字段只含'
+        "译文本身，不要输出编号、原文、解释或任何额外内容；"
         "译文须符合字幕习惯，简洁口语化，单行不宜过长。",
     ]
     if cfg.additional_prompt:

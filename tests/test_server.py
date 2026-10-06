@@ -44,18 +44,17 @@ class FakeBackend(AsrBackend):
 
 
 class FakeChatClient:
-    """按 system prompt 内容路由的 fake chat 客户端。"""
+    """按 schema name 路由的 fake chat_json 客户端。"""
 
     def __init__(self, translation="默认译文"):
         self.translation = translation
 
-    def chat(self, messages, temperature=None):
-        system = messages[0]["content"]
-        if "内容摘要" in system or "部分内容" in system or "合并为一份全片摘要" in system:
-            return "测试摘要"
-        if "术语管理助手" in system:
-            return "Erebus | 厄瑞玻斯 | 2"
-        return self.translation
+    def chat_json(self, messages, *, schema, name, temperature=None):
+        if name == "summary":
+            return {"summary": "测试摘要"}
+        if name == "glossary":
+            return {"entries": [{"src": "Erebus", "dst": "厄瑞玻斯", "count": 2}]}
+        return {"translation": self.translation}
 
 
 @pytest.fixture

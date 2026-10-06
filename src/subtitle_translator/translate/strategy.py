@@ -8,9 +8,12 @@
 3. 滑动窗口逐句翻译：system 注入术语表+摘要，历史对拼成
    user/assistant 消息对，前瞻原文标注不翻译。调用间无服务端状态。
 
-防御性解析：剥离编号与多余空白；空输出 / 明显复读（译文 > 原文 10 倍
-或 > 500 字符）触发单条重试（最多 2 次，第二次降 temperature），仍失败
-保留原文占位并打 "translation_failed" 标记，不中断整体流程。
+三步全部走 JSON schema 结构化输出（client.chat_json），不做格式降级；
+摘要取 ``summary`` 字段、术语表取 ``entries``、译文取 ``translation`` 字段。
+
+译文异常检测：空输出 / 明显复读（译文 > 原文 10 倍或 > 500 字符）触发
+单条重试（最多 2 次，第二次降 temperature），仍失败保留原文占位并打
+"translation_failed" 标记，不中断整体流程。
 
 术语后校验（第一版只标记）：原文含某术语 src 而译文不含对应 dst，
 在该 cue 上记 "glossary_miss:<src>"。
@@ -18,7 +21,6 @@
 
 from __future__ import annotations
 
-import re
 from abc import ABC, abstractmethod
 from typing import Callable, Optional, Union
 
@@ -39,9 +41,6 @@ CUE_MAX_RETRIES = 2
 # 第二次重试的 temperature 折扣
 RETRY_TEMPERATURE_FACTOR = 0.5
 
-# 剥离模型输出开头的编号，如 "12." / "12、" / "[12]" / "(12)"
-_NUMBER_PREFIX_RE = re.compile(r"^\s*(?:\[?\(?\d+\]?[.)]?[、:：]?\s*)+")
-
 
 class GlossaryNotConfirmedError(RuntimeError):
     """术语表存在未确认条目，拒绝开始逐句翻译（人工确认检查点）。"""
@@ -60,11 +59,6 @@ class TranslationStrategy(ABC):
     ) -> SubtitleProject:
         """执行翻译。auto_confirm=True 时自动确认术语表（CLI --auto-confirm）。"""
         raise NotImplementedError
-
-
-def _clean_output(text: str) -> str:
-    """防御性清洗：剥离编号前缀与多余空白。"""
-    return _NUMBER_PREFIX_RE.sub("", text).strip()
 
 
 def _is_suspicious(src: str, dst: str) -> bool:
@@ -114,10 +108,10 @@ class SlidingWindowStrategy(TranslationStrategy):
 
         # ① 摘要：已有（断点续传）则跳过
         if not project.meta.summary:
-            project.meta.summary = generate_summary(client.chat, project)
+            project.meta.summary = generate_summary(client.chat_json, project)
         # ② 术语表：已有（断点续传/人工改过）则跳过
         if not project.glossary:
-            project.glossary = extract_glossary(client.chat, project, translate_cfg)
+            project.glossary = extract_glossary(client.chat_json, project, translate_cfg)
         project.stage = Stage.CONTEXTED
 
         # 人工确认检查点
@@ -197,7 +191,13 @@ class SlidingWindowStrategy(TranslationStrategy):
             temperature = cfg.temperature
             if attempt == CUE_MAX_RETRIES:
                 temperature = max(0.0, cfg.temperature * RETRY_TEMPERATURE_FACTOR)
-            result = _clean_output(client.chat(messages, temperature=temperature))
+            data = client.chat_json(
+                messages,
+                schema=prompts.TRANSLATION_RESPONSE_SCHEMA,
+                name="translation",
+                temperature=temperature,
+            )
+            result = str(data.get("translation") or "").strip()
             if not _is_suspicious(cue.text, result):
                 return result
         if "translation_failed" not in cue.flags:
