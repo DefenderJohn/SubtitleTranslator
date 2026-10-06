@@ -1,13 +1,16 @@
 /** 字幕校对：cue 表格（译文可编辑）+ 视频预览（点行跳转播放）。
  *
- * 术语不一致标记（glossary_miss:<src>）在译文单元格红色提示；
- * 编辑保存调 PATCH /api/project/cues。
+ * project JSON 由详情页统一拉取传入（404 = 尚未生成 → 空态，不弹错误）；
+ * 顶部统计行：共 N 条 / 已翻译 N / 术语标记 N（红，点击切换只看标记行）。
+ * 编辑保存调 PATCH /api/project/cues 后回调 onProjectChange 同步上层。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   Button,
+  Empty,
   Input,
   Space,
+  Statistic,
   Table,
   Tag,
   Typography,
@@ -21,41 +24,28 @@ interface Props {
   path: string;
   /** 视频预览路径；不传（如纯音频 / from_json 工程）则隐藏预览面板 */
   videoPath?: string;
+  /** 工程 JSON；null = 尚未生成（任务早期）→ 空态 */
+  project: Project | null;
+  onProjectChange: (project: Project) => void;
 }
 
-export default function CueTable({ path, videoPath }: Props) {
-  const [project, setProject] = useState<Project | null>(null);
-  const [loading, setLoading] = useState(false);
+/** 术语后校验未命中的标记（glossary_miss:<src>） */
+const isGlossaryMiss = (cue: Cue) =>
+  cue.flags.some((f) => f.startsWith("glossary_miss:"));
+
+export default function CueTable({ path, videoPath, project, onProjectChange }: Props) {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      setProject(await api.getProject(path));
-    } catch (err) {
-      message.error(`加载工程失败：${(err as Error).message}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [path]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const [onlyMarked, setOnlyMarked] = useState(false);
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
 
   const saveCue = async (cue: Cue) => {
     try {
       const updated = await api.patchCue(path, cue.id, { translation: draft });
-      setProject((prev) =>
-        prev
-          ? {
-              ...prev,
-              cues: prev.cues.map((c) => (c.id === cue.id ? updated : c)),
-            }
-          : prev,
-      );
+      onProjectChange({
+        ...project!,
+        cues: project!.cues.map((c) => (c.id === cue.id ? updated : c)),
+      });
       setEditingId(null);
       message.success(`已保存第 ${cue.id} 条`);
     } catch (err) {
@@ -64,10 +54,9 @@ export default function CueTable({ path, videoPath }: Props) {
   };
 
   const seekTo = (cue: Cue) => {
-    const video = videoRef.current;
-    if (video) {
-      video.currentTime = cue.start;
-      void video.play();
+    if (videoEl) {
+      videoEl.currentTime = cue.start;
+      void videoEl.play();
     }
   };
 
@@ -75,12 +64,39 @@ export default function CueTable({ path, videoPath }: Props) {
     videoPath != null &&
     /\.(mp4|webm|mkv|mov|avi|m4v|mpeg|mpga|ogg)$/i.test(videoPath);
 
+  if (!project) {
+    return <Empty description="工程文件尚未生成（转录完成后可校对）" />;
+  }
+
+  const cues = project.cues;
+  const translatedCount = cues.filter((c) => c.translation.trim()).length;
+  const markedCount = cues.filter(isGlossaryMiss).length;
+  const shown = onlyMarked ? cues.filter(isGlossaryMiss) : cues;
+
+  const stats = (
+    <Space size="large" style={{ marginBottom: 12 }} wrap>
+      <Statistic title="共" value={cues.length} suffix="条" />
+      <Statistic title="已翻译" value={translatedCount} suffix="条" />
+      <span
+        onClick={() => setOnlyMarked((v) => !v)}
+        style={{ cursor: markedCount ? "pointer" : "default" }}
+        title={markedCount ? "点击切换只看术语标记行" : undefined}
+      >
+        <Statistic
+          title={onlyMarked ? "术语标记（只看标记行，点击取消）" : "术语标记"}
+          value={markedCount}
+          suffix="条"
+          valueStyle={{ color: markedCount ? "#cf1322" : undefined }}
+        />
+      </span>
+    </Space>
+  );
+
   const table = (
     <Table<Cue>
       rowKey="id"
       size="small"
-      loading={loading}
-      dataSource={project?.cues ?? []}
+      dataSource={shown}
       pagination={{ pageSize: 50, showSizeChanger: true }}
       onRow={(cue) => ({
         onClick: () => seekTo(cue),
@@ -165,21 +181,24 @@ export default function CueTable({ path, videoPath }: Props) {
   );
 
   return (
-    <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-      <div style={{ flex: 1, minWidth: 0 }}>{table}</div>
-      {isVideo && videoPath && (
-        <div style={{ width: 360, flexShrink: 0 }}>
-          <video
-            ref={videoRef}
-            controls
-            style={{ width: "100%", background: "#000", borderRadius: 6 }}
-            src={api.videoUrl(videoPath)}
-          />
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {basename(videoPath)}（点击左侧 cue 行跳转播放）
-          </Typography.Text>
-        </div>
-      )}
+    <div>
+      {stats}
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>{table}</div>
+        {isVideo && videoPath && (
+          <div style={{ width: 360, flexShrink: 0 }}>
+            <video
+              ref={setVideoEl}
+              controls
+              style={{ width: "100%", background: "#000", borderRadius: 6 }}
+              src={api.videoUrl(videoPath)}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {basename(videoPath)}（点击左侧 cue 行跳转播放）
+            </Typography.Text>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

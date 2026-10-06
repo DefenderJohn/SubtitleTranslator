@@ -161,14 +161,14 @@ JSON schema：
 
 - 后端：FastAPI（REST + SSE 进度推送 + Range 请求视频流）。
 - 前端：React + Ant Design，Vite 构建。
-- 第一版只做：上传/选文件、任务列表+进度、字幕表格文本编辑、术语表确认、下载。
+- 页面结构：任务页（新建任务草稿放全局 context，切路由不丢；上传批次失效有探测 + 一键清空）、详情页（头部操作组 + Steps 五阶段进度【转录→建档→术语确认→翻译→导出，当前阶段给进度条与 ETA】+ Tabs【字幕校对（含统计/标记过滤）/ 术语表（stage ≥ contexted 随时可看可改）/ 摘要 / 运行信息（选项快照 + 阶段耗时 + 失败 cue + 事件记录）】，project JSON 只是可选增强，404 一律空态不报错）、设置页（翻译「测试连接」带当前表单测、`POST /api/preflight`「系统检查」）。
 - 波形修轴和剪辑是未来功能；数据格式已预留（words 词级时间戳）。
 
 ### 8.1 server 架构（localhost 单用户）
 
 - **薄壳**：业务逻辑全部走 core（pipeline / models / config），server 只做协议转换与参数校验。
 - **任务调度**：进程内任务注册表 + 单并发 asyncio worker（本地单 GPU，排队即可，不引入 Celery/Redis）。同步 pipeline 用 `asyncio.to_thread` 执行；pipeline 的 progress_cb 在 worker 线程被调用，事件经 `loop.call_soon_threadsafe` 推给 SSE 订阅队列（asyncio.Queue 非线程安全，任务入队端点用 async def 在事件循环线程执行）。
-- **SSE**：`GET /api/tasks/{id}/events` 直接透传 pipeline event 五键，附加 `task_id` 与 `status`；订阅时先回放历史事件（后打开的页面可恢复进度），任务进入终态（done/failed/cancelled）后关流。状态变更也产生事件（stage 为空串）。
+- **SSE**：`GET /api/tasks/{id}/events` 直接透传 pipeline event 五键，附加 `task_id`、`status` 与 `time`（epoch 秒，前端 ETA / 阶段耗时估算用，历史回放保留真实时刻）；订阅时先回放历史事件（后打开的页面可恢复进度），任务进入终态（done/failed/cancelled）后关流。状态变更也产生事件（stage 为空串）。任务快照另含 `options`（创建时的选项，详情页「运行信息」展示）。
 - **任务状态机**：
   ```
   pending ──→ running ──→ done
@@ -192,7 +192,7 @@ JSON schema：
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/tasks` | 创建任务：body `{path, options{auto_confirm, bilingual, transcribe_only, language}}`，path 文件/目录自动判断，返回任务快照（含 id） |
-| GET | `/api/tasks` | 任务列表（id、path、media、status、progress 快照、artifacts、created_at） |
+| GET | `/api/tasks` | 任务列表（id、path、media、options、status、progress 快照、artifacts、created_at） |
 | GET | `/api/tasks/{id}` | 任务详情（artifacts 为已存在的导出 SRT 路径列表，可经 `/api/download` 下载） |
 | GET | `/api/tasks/{id}/events` | SSE 订阅（历史回放 + 实时推送，终态关流） |
 | POST | `/api/tasks/{id}/cancel` | 取消（协作式）；终态返回 409 |
