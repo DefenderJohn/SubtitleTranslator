@@ -149,10 +149,16 @@ class TestTaskLifecycle:
         assert project.stage == Stage.TRANSLATED
         assert (tmp_path / "movie.srt").exists()
 
-        # 事件流遵循 pipeline 协议 + task_id/status
-        keys = {"media", "stage", "done", "total", "message", "task_id", "status"}
+        # 事件流遵循 pipeline 协议 + task_id/status/time（time 为 epoch 秒，ETA/耗时用）
+        keys = {"media", "stage", "done", "total", "message", "task_id", "status", "time"}
         for event in client.app.state.manager.get(task_id).events:
             assert set(event) == keys
+            assert isinstance(event["time"], float)
+        times = [e["time"] for e in client.app.state.manager.get(task_id).events]
+        assert times == sorted(times)
+
+        # 快照携带创建时的选项（详情页「运行信息」配置快照）
+        assert detail["options"]["auto_confirm"] is True
 
         # 列表接口包含该任务
         listing = client.get("/api/tasks").json()

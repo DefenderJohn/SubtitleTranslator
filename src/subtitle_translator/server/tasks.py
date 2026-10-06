@@ -92,12 +92,14 @@ class Task:
     def snapshot(self) -> dict:
         """列表 / 详情接口的序列化视图（progress 为最近一条事件快照）。
 
-        artifacts 为已存在的导出产物（SRT）路径列表，前端据此给下载链接。
+        artifacts 为已存在的导出产物（SRT）路径列表，前端据此给下载链接；
+        options 为创建任务时的选项快照，前端详情页「运行信息」展示用。
         """
         return {
             "id": self.id,
             "path": self.path,
             "media": list(self.media),
+            "options": dict(self.options),
             "status": self.status,
             "created_at": self.created_at,
             "error": self.error,
@@ -253,7 +255,12 @@ class TaskManager:
         self._queue.put_nowait(task.id)
 
     def _record(self, task: Task, event: dict) -> None:
-        """记录事件并推给订阅者。可从 worker 线程或事件循环调用。"""
+        """记录事件并推给订阅者。可从 worker 线程或事件循环调用。
+
+        统一补上 ``time``（epoch 秒）：前端详情页据此估算 ETA 与各阶段耗时，
+        历史回放也保留真实发生时刻。
+        """
+        event = {**event, "time": time.time()}
         task.events.append(event)
         subscribers = self._subscribers.get(task.id) or []
         if self._loop is not None:
