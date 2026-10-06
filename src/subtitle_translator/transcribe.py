@@ -185,13 +185,20 @@ class VllmBackend(AsrBackend):
             return
         Qwen3ASRModel = _import_qwen_asr()
         dtype = _resolve_dtype(self.cfg.dtype)
-        self._model = Qwen3ASRModel.LLM(
-            model=self.cfg.model,
-            dtype=self.cfg.dtype,  # vLLM 侧接受字符串 dtype
-            gpu_memory_utilization=0.85,
-            forced_aligner=self.cfg.aligner_model,
-            forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device),
-        )
+        try:
+            self._model = Qwen3ASRModel.LLM(
+                model=self.cfg.model,
+                dtype=self.cfg.dtype,  # vLLM 侧接受字符串 dtype
+                gpu_memory_utilization=0.85,
+                forced_aligner=self.cfg.aligner_model,
+                forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device),
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "vllm backend 需要 vllm，未安装。请安装：\n"
+                "  pip install 'subtitle-translator[asr-vllm]'\n"
+                "（或把 config.yaml 的 asr.backend 改为 transformers）"
+            ) from exc
 
     def transcribe_chunk(self, audio_path, language=None):
         self._ensure_loaded()

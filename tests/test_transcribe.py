@@ -82,10 +82,24 @@ class TestBackends:
             create_backend(cfg)
 
     def test_load_without_qwen_asr_gives_clear_error(self):
+        import importlib.util
+
+        if importlib.util.find_spec("qwen_asr") is not None:
+            pytest.skip("本环境已安装 qwen-asr，缺包报错路径不适用")
         with pytest.raises(RuntimeError, match="qwen-asr"):
             VllmBackend(AsrConfig()).load()
         with pytest.raises(RuntimeError, match="qwen-asr"):
             TransformersBackend(AsrConfig()).load()
+
+    def test_vllm_backend_without_vllm_gives_clear_error(self):
+        import importlib.util
+
+        if importlib.util.find_spec("qwen_asr") is None:
+            pytest.skip("本环境未安装 qwen-asr")
+        if importlib.util.find_spec("vllm") is not None:
+            pytest.skip("本环境已安装 vllm")
+        with pytest.raises(RuntimeError, match="asr-vllm"):
+            VllmBackend(AsrConfig()).load()
 
     def test_transcribe_before_load_raises(self):
         with pytest.raises(RuntimeError, match="load"):
