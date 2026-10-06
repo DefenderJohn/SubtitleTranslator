@@ -181,6 +181,7 @@ JSON schema：
 - **静态托管**：`frontend/dist` 存在时挂载到 `/`（前端路由回退 index.html，SPA fallback），不存在时 `/` 返回占位提示页；API 路由优先于静态挂载。
 - **路径安全**：本工具是 localhost 单用户工具，API 的路径参数就是本机文件路径（选文件/浏览目录是功能本身），不做沙箱化。唯一收紧的是下载端点（见 §8.2 `/api/download`）：只允许 `.srt` / `.sub.json` 产物或 upload_dir 内的文件，不裸奔任意文件读。
 - **浏览器上传**：`POST /api/upload` 接收 multipart 多文件，流式分块写盘（视频可达 GB 级，不整个读进内存）；文件名取 basename 防路径穿越、扩展名复用 MEDIA_EXTENSIONS 白名单校验（整批先校验后写盘）、同批/盘上撞名自动加 `_2` 后缀去重；每次上传建独立批次子目录 `upload_dir/YYYYMMDD-HHMMSS-xxxxxx/`，避免同名文件互相覆盖。返回的服务器侧路径直接拿去走 `POST /api/tasks`，复用同一套任务/pipeline 机制；上传文件的字幕校对视频预览经 `/api/video?path=` 天然可用。
+- **上传生命周期（临时工作副本）**：上传批次目录（含其中的媒体与 .sub.json/.srt 产物）是临时的——server 正常退出（lifespan shutdown，uvicorn 的 Ctrl+C 路径）时删除本会话创建的全部批次目录，删除失败只警告不阻塞退出；运行中不删（任务完成后用户可能还要校对/下载 SRT）。崩溃兜底：启动时清理 upload_dir 下所有批次形态（`YYYYMMDD-HHMMSS-xxxxxx` 命名的子目录，符号链接除外）的遗留目录——前提 **localhost 单实例、upload_dir 不与其他实例共享**；非批次形态的条目（用户手放的文件/目录）不动。启动/退出各在 stderr 打印一行清理摘要（批次数 + 释放空间）。服务器路径模式处理的是用户自己的文件，任何情况下不删。
 
 ### 8.2 API 清单
 

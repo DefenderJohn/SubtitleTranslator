@@ -509,6 +509,58 @@ class TestUploadDownload:
         assert "-->" in resp.text
 
 
+class TestUploadCleanup:
+    """上传批次目录生命周期：退出删本会话批次、启动清崩溃遗留、其余不动。"""
+
+    def _upload_root(self, config_path) -> Path:
+        return Path(yaml.safe_load(config_path.read_text(encoding="utf-8"))["ui"]["upload_dir"])
+
+    def test_shutdown_removes_session_batches(self, config_path, fake_pipeline, capsys):
+        """lifespan shutdown（TestClient with 块退出）删除本会话上传的批次目录。"""
+        with TestClient(create_app(config_path=config_path)) as c:
+            resp = c.post("/api/upload", files=[("files", ("a.mp3", b"1"))])
+            assert resp.status_code == 200
+            batch = Path(resp.json()["batch"])
+            assert batch.is_dir()
+            # 运行中不删：即使文件已落盘，退出前批次目录仍在
+            assert (batch / "a.mp3").is_file()
+        assert not batch.exists()
+        assert "退出清理" in capsys.readouterr().err
+
+    def test_startup_removes_orphan_batches(self, config_path, fake_pipeline):
+        """启动时清理 upload_dir 下批次形态的遗留目录（kill -9 兜底）。"""
+        root = self._upload_root(config_path)
+        orphan = root / "20200101-000000-abc123"
+        orphan.mkdir(parents=True)
+        (orphan / "old.mp3").write_bytes(b"x")
+        # 非批次形态的目录与散文件不受启动/退出清理影响
+        keep_dir = root / "my-files"
+        keep_dir.mkdir()
+        (keep_dir / "keep.mp3").write_bytes(b"x")
+        loose = root / "notes.txt"
+        loose.write_text("x", encoding="utf-8")
+        with TestClient(create_app(config_path=config_path)):
+            assert not orphan.exists()
+        assert (keep_dir / "keep.mp3").is_file()
+        assert loose.is_file()
+
+    def test_server_path_files_untouched(self, config_path, fake_pipeline, tmp_path):
+        """服务器路径模式的文件（用户自己的文件）退出时绝不删除。"""
+        media = tmp_path / "movie.mp4"
+        media.write_bytes(b"fake-video")
+        json_path = tmp_path / "movie.sub.json"
+        json_path.write_text("{}", encoding="utf-8")
+        with TestClient(create_app(config_path=config_path)) as c:
+            task_id = c.post(
+                "/api/tasks", json={"path": str(media), "options": {"auto_confirm": True}}
+            ).json()["id"]
+            assert _wait_status(c, task_id, {"done"}) == "done"
+            assert json_path.is_file()  # pipeline 真产物，在媒体旁边
+        assert media.is_file()
+        assert json_path.is_file()
+        assert (tmp_path / "movie.srt").is_file()
+
+
 class TestConfigEndpoints:
     def test_api_key_masked(self, client, config_path):
         # 写入明文 key，GET 不得泄露

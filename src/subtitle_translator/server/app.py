@@ -10,7 +10,10 @@ HTTP 协议转换与路径 / 参数校验。任务调度见 :mod:`.tasks`。
 - api_key 不明文返回（masked），PUT 时空字符串 / mask 值表示不修改；
 - 浏览器上传模式：POST /api/upload 流式写盘到 ui.upload_dir 的批次子目录，
   返回服务器路径复用 POST /api/tasks；GET /api/download 下载 SRT 产物
-  （限 .srt/.sub.json 或 upload_dir 内文件）；
+  （限 .srt/.sub.json 或 upload_dir 内文件）。上传批次是临时工作副本：
+  本会话上传的批次在 lifespan shutdown（含 Ctrl+C）时删除；启动时清理
+  upload_dir 下非本会话的遗留批次目录（kill -9 / 断电兜底，前提
+  localhost 单实例）；运行中不删。服务器路径模式的文件绝不删除；
 - 前端构建产物 frontend/dist 存在时挂载到 /（SPA 路由回退 index.html），
   否则给占位提示页。
 """
@@ -19,7 +22,9 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import shutil
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, fields
@@ -64,6 +69,10 @@ UPLOAD_CHUNK_SIZE = 1024 * 1024
 
 # 下载端点允许的后缀（upload_dir 内的文件不受后缀限制）
 DOWNLOAD_SUFFIXES = (".srt", PROJECT_SUFFIX)
+
+# 上传批次目录命名：YYYYMMDD-HHMMSS-<uuid6>（见 upload_files），
+# 启动/退出清理只认这个形态的子目录，其他条目一律不动
+BATCH_DIR_PATTERN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}")
 
 _PLACEHOLDER_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>SubtitleTranslator</title></head>
@@ -166,6 +175,64 @@ def _is_dir_quiet(path: Path) -> bool:
         return False
 
 
+def _format_size(num_bytes: int) -> str:
+    """字节数转人类可读（stderr 清理报告用）。"""
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024:
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for entry in path.rglob("*"):
+        try:
+            if entry.is_file():
+                total += entry.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _remove_batch_dirs(batches: list[Path]) -> tuple[int, int]:
+    """删除上传批次目录，返回（删除数, 释放字节数）。失败只警告不抛出。"""
+    removed, freed = 0, 0
+    for batch in batches:
+        try:
+            size = _dir_size(batch)
+            shutil.rmtree(batch)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"警告：删除上传批次目录失败 {batch}（{exc}）", file=sys.stderr)
+            continue
+        removed += 1
+        freed += size
+    return removed, freed
+
+
+def _find_orphan_batches(upload_root: Path, keep: set[Path]) -> list[Path]:
+    """upload_dir 下所有批次形态的非本会话子目录（崩溃遗留）。
+
+    只匹配 ``YYYYMMDD-HHMMSS-xxxxxx`` 命名的目录；用户手放的其他
+    文件/目录、符号链接一律不碰。
+    """
+    try:
+        children = list(upload_root.iterdir())
+    except OSError:
+        return []
+    return [
+        child
+        for child in children
+        if BATCH_DIR_PATTERN.fullmatch(child.name)
+        and child not in keep
+        and not child.is_symlink()
+        and _is_dir_quiet(child)
+    ]
+
+
 def _safe_upload_name(filename: Optional[str]) -> str:
     """上传文件名消毒：取 basename 防路径穿越，校验媒体扩展名。"""
     name = Path((filename or "").replace("\\", "/")).name
@@ -251,12 +318,33 @@ def create_app(
 ) -> FastAPI:
     config_path = Path(config_path)
     manager = TaskManager(config_path)
+    # 上传会话：本会话创建的批次目录集合（内存），退出时统一清理；
+    # 启动时清理 upload_dir 下非本会话的遗留批次（kill -9 / 断电兜底，
+    # 前提 localhost 单实例、upload_dir 不与其他实例共享）。
+    session_id = uuid.uuid4().hex[:8]
+    session_batches: set[Path] = set()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        upload_root = resolve_upload_dir(load_config(config_path))
+        removed, freed = _remove_batch_dirs(_find_orphan_batches(upload_root, session_batches))
+        print(
+            f"[session {session_id}] 启动清理：移除遗留上传批次 {removed} 个，"
+            f"释放 {_format_size(freed)}（upload_dir={upload_root}）",
+            file=sys.stderr,
+        )
         manager.start()
-        yield
-        await manager.stop()
+        try:
+            yield
+        finally:
+            # 先停 worker（跑着的任务可能正往批次目录写产物），再删批次
+            await manager.stop()
+            removed, freed = _remove_batch_dirs(sorted(session_batches))
+            print(
+                f"[session {session_id}] 退出清理：删除本次会话上传批次 {removed} 个，"
+                f"释放 {_format_size(freed)}",
+                file=sys.stderr,
+            )
 
     app = FastAPI(title="SubtitleTranslator", lifespan=lifespan)
     app.state.manager = manager
@@ -425,6 +513,8 @@ def create_app(
         except OSError as exc:
             shutil.rmtree(batch, ignore_errors=True)
             raise HTTPException(status_code=500, detail=f"上传写入失败: {exc}") from exc
+        # 登记进本会话集合，server 退出时随会话清理
+        session_batches.add(batch)
         return {"batch": str(batch), "paths": [str(p) for p in saved]}
 
     @app.get("/api/download")
