@@ -85,7 +85,7 @@ subtitle-translator config init [path]
   - 结果对象 `ASRTranscription(language, text, time_stamps)`；`time_stamps` 为 `ForcedAlignResult`（可迭代），词元素字段 `text / start_time / end_time`（`_extract_result` 兼容 dict 形态与 start/end 别名）。
   - `language` 参数只接受规范语言名（"English"/"Chinese" 等 30 种）；`_normalize_language` 把 ISO 代码（en/zh/ja...）映射为规范名，其余值透传由 qwen-asr 校验。
   - `from_pretrained` 的 `dtype` 是 torch 对象（`_resolve_dtype` 把配置字符串转过去）；forced aligner 经 `forced_aligner_kwargs` 传 dtype/device_map。
-- 两个 backend：**vLLM 优先（`Qwen3ASRModel.LLM(...)`）、transformers 兜底（`.from_pretrained(...)`）**，做成配置项 `asr.backend`，对上层接口零差异（`AsrBackend` 抽象：`load()` / `transcribe_chunk(audio_path, language)` / `unload()`）。`qwen_asr` 在 `load()` 内延迟 import，未安装时模块仍可 import、`load()` 报清晰错误；vllm 缺失时报错指向 `asr-vllm` extra。
+- 两个 backend：**transformers（`.from_pretrained(...)`，默认）与 vLLM（`Qwen3ASRModel.LLM(...)`，可选加速）**，做成配置项 `asr.backend`，对上层接口零差异（`AsrBackend` 抽象：`load()` / `transcribe_chunk(audio_path, language)` / `unload()`）。默认 transformers 的原因：Turing（sm_75）等老卡兼容性 + 依赖更轻（vLLM 单列 `asr-vllm` extra）。`qwen_asr` 在 `load()` 内延迟 import，未安装时模块仍可 import、`load()` 报清晰错误；vllm 缺失时报错指向 `asr-vllm` extra。
 - **硬约束**：ForcedAligner 单次只支持短音频（qwen-asr 0.0.6 内部按 180s 自行再切块）。因此必须自写切块层：
   - 用 `ffmpeg silencedetect` 找静音边界（刻意不引入 silero-vad 等额外 torch 依赖）；
   - `chunk_plan(duration, silences, max_seconds)` 纯函数切块：优先在目标切点之前最接近目标的静音中点下刀，找不到静音时硬切并记 warning；
@@ -153,7 +153,7 @@ JSON schema：
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
 - 分三节：`asr` / `translate` / `ui`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）。
+- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）。
 
 ## 8. 网页（server/ + frontend/）
 

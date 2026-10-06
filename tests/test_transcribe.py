@@ -72,7 +72,7 @@ class TestBackends:
         assert isinstance(
             create_backend(AsrConfig(backend="transformers")), TransformersBackend
         )
-        assert isinstance(create_backend(Config()), VllmBackend)
+        assert isinstance(create_backend(Config()), TransformersBackend)
 
     def test_create_backend_invalid(self):
         # 绕过 __post_init__ 校验塞入非法 backend

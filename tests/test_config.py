@@ -15,7 +15,7 @@ from subtitle_translator.config import (
 
 def test_default_values():
     cfg = default_config()
-    assert cfg.asr.backend == "vllm"
+    assert cfg.asr.backend == "transformers"
     assert cfg.asr.model == "Qwen/Qwen3-ASR-1.7B"
     assert cfg.asr.aligner_model == "Qwen/Qwen3-ForcedAligner-0.6B"
     assert cfg.asr.chunk_max_seconds <= 300.0
@@ -55,7 +55,7 @@ def test_load_partial_yaml_uses_defaults(tmp_path):
     cfg = load_config(path)
     assert cfg.translate.model == "foo"
     assert cfg.translate.history_count == 10
-    assert cfg.asr.backend == "vllm"
+    assert cfg.asr.backend == "transformers"
 
 
 def test_invalid_backend_rejected():

@@ -15,8 +15,8 @@ pip install -e ".[asr,web]" && pip install imageio-ffmpeg
 modelscope download --model Qwen/Qwen3-ASR-1.7B --local_dir /path/to/Qwen3-ASR-1.7B
 modelscope download --model Qwen/Qwen3-ForcedAligner-0.6B --local_dir /path/to/Qwen3-ForcedAligner-0.6B
 
-# 3. 生成配置，按需修改：asr.backend=transformers（未装 vLLM 时）、
-#    asr.model / aligner_model 本地路径、translate.base_url / model / api_key_env
+# 3. 生成配置，按需修改：asr.model / aligner_model 填本地路径、
+#    translate.base_url / model / api_key_env（backend 默认 transformers，开箱即用）
 subtitle-translator config init
 
 # 4a. 命令行：完整流水线（转录 → 翻译 → 双语 SRT）

@@ -4,4 +4,4 @@
 FastAPI + React 网页（server/）。设计定案见 docs/DESIGN.md。
 """
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

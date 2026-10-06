@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subtitle-translator"
-version = "0.1.0"
+version = "1.0.0"
 description = "音视频字幕转录与翻译工具：core 库 + CLI / Web 双壳"
 readme = "readme.md"
 requires-python = ">=3.10"

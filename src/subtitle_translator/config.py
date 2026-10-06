@@ -20,7 +20,7 @@ ASR_BACKENDS = ("vllm", "transformers")
 
 @dataclass
 class AsrConfig:
-    backend: str = "vllm"  # vllm | transformers
+    backend: str = "transformers"  # transformers（开箱即用）| vllm（可选加速，老卡不建议）
     model: str = "Qwen/Qwen3-ASR-1.7B"
     aligner_model: str = "Qwen/Qwen3-ForcedAligner-0.6B"
     device: str = "cuda"

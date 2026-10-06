@@ -48,8 +48,8 @@ pip install imageio-ffmpeg      # 提供 ffmpeg 静态二进制
 说明：
 
 - `pip install -e .` 只装 core（pyyaml + openai），只能导出/查看术语表等，不能转录。
-- 转录层在 `asr` extra 里。**默认 backend 是 transformers，装好 `asr` extra 即可用**。
-- vLLM backend 更快，但需另装 `pip install -e ".[asr-vllm]"`，且新版 vLLM 对 Turing（sm_75）等老卡支持不佳，**老卡不建议**。装好 vLLM 才把 config 的 `asr.backend` 留作 `vllm`；只装了 transformers 的用户必须把它改成 `transformers`（见 3.2）。
+- 转录层在 `asr` extra 里。**默认 backend 是 transformers，装好 `asr` extra 开箱即用**。
+- vLLM backend 更快，但需另装 `pip install -e ".[asr-vllm]"`，且新版 vLLM 对 Turing（sm_75）等老卡支持不佳，**老卡不建议**。装好 vLLM 后想用它，把 config 的 `asr.backend` 改成 `vllm`（见 3.2）。
 
 ### 2.3 ffmpeg
 
@@ -94,7 +94,7 @@ subtitle-translator config init my.yaml  # 指定输出路径
 
 ```yaml
 asr:
-  backend: vllm            # vllm | transformers。只装了 asr extra（transformers）必须改成 transformers
+  backend: transformers    # transformers（默认，开箱即用）| vllm（可选加速，老卡不要改）
   model: Qwen/Qwen3-ASR-1.7B                 # 填模型 ID 或本地路径
   aligner_model: Qwen/Qwen3-ForcedAligner-0.6B
   device: cuda
