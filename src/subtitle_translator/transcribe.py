@@ -207,9 +207,15 @@ class AsrBackend(ABC):
         """转录单个音频片段（≤ chunk_max_seconds），返回 (text, 词级时间戳)（块内相对时间）。"""
 
     def unload(self) -> None:
-        """释放模型引用。不 import torch，显存回收交给进程/GC。"""
+        """释放模型引用并主动归还 CUDA 显存（torch 不可用或未用 GPU 时跳过）。"""
         self._model = None
         gc.collect()
+        try:
+            import torch
+        except ImportError:
+            return
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _ensure_loaded(self):
         if self._model is None:
