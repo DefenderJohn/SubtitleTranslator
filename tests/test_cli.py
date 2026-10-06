@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from subtitle_translator import cli, pipeline
+from subtitle_translator import cli, pipeline, preflight
 from subtitle_translator.config import load_config
 from subtitle_translator.models import Cue, GlossaryEntry, Stage, SubtitleProject
 
@@ -136,7 +136,7 @@ class TestGlossary:
 class TestRun:
     @pytest.fixture
     def mock_pipeline(self, monkeypatch, tmp_path):
-        """mock 掉 pipeline 重活，记录调用参数；配好带 model 的 config.yaml。"""
+        """mock 掉 pipeline 重活与预检，记录调用参数；配好带 model 的 config.yaml。"""
         (tmp_path / "config.yaml").write_text(
             "translate:\n  model: test-model\n  api_key: k\n", encoding="utf-8"
         )
@@ -151,7 +151,32 @@ class TestRun:
 
         monkeypatch.setattr(pipeline, "run_pipeline", fake_run_pipeline)
         monkeypatch.setattr(pipeline, "run_batch", fake_run_batch)
+        monkeypatch.setattr(
+            preflight, "run_preflight", lambda *a, **k: preflight.PreflightReport()
+        )
         return calls
+
+    @pytest.fixture
+    def stub_preflight_heavy(self, monkeypatch):
+        """保留真实 run_preflight 编排，stub 掉 ffmpeg/模型/GPU/连通性等环境相关检查。"""
+        monkeypatch.setattr(
+            preflight,
+            "check_ffmpeg",
+            lambda cfg: preflight.CheckResult("ffmpeg", preflight.STATUS_OK, "fake"),
+        )
+        monkeypatch.setattr(
+            preflight,
+            "check_asr_models",
+            lambda cfg, **kw: [preflight.CheckResult("ASR 模型", preflight.STATUS_OK, "fake")],
+        )
+        monkeypatch.setattr(
+            preflight, "check_gpu", lambda: preflight.CheckResult("GPU", preflight.STATUS_OK, "fake")
+        )
+        monkeypatch.setattr(
+            preflight,
+            "test_translate_endpoint",
+            lambda cfg, **kw: preflight.EndpointTestResult(True, latency_ms=1.0, response_preview="x"),
+        )
 
     def test_run_single_file(self, mock_pipeline, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -186,24 +211,82 @@ class TestRun:
         _, _, kwargs = mock_pipeline["run"]
         assert kwargs["from_json"] is True
 
-    def test_missing_model_is_friendly_error(self, tmp_path, monkeypatch, capsys):
+    def test_missing_model_is_friendly_error(
+        self, tmp_path, monkeypatch, capsys, stub_preflight_heavy
+    ):
+        """translate.model 未配置：预检硬错误，退出码 2，pipeline 不会被调用。"""
         monkeypatch.chdir(tmp_path)  # 无 config.yaml → 默认配置 translate.model=""
+
+        def boom(*a, **k):
+            raise AssertionError("预检未通过时不应调用 pipeline")
+
+        monkeypatch.setattr(pipeline, "run_pipeline", boom)
         media = tmp_path / "v.mp4"
         media.touch()
-        assert cli.main(["run", str(media)]) == 1
+        assert cli.main(["run", str(media)]) == 2
         err = capsys.readouterr().err
-        assert "translate.model 未配置" in err
+        assert "预检未通过" in err
+        assert "translate.model" in err and "未配置" in err
         assert "config init" in err
 
-    def test_missing_api_key_warns_but_runs(self, mock_pipeline, tmp_path, monkeypatch, capsys):
+    def test_missing_api_key_warns_but_runs(
+        self, tmp_path, monkeypatch, capsys, stub_preflight_heavy
+    ):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "config.yaml").write_text(
             "translate:\n  model: test-model\n", encoding="utf-8"
         )
+        monkeypatch.setattr(pipeline, "run_pipeline", lambda *a, **k: None)
         media = tmp_path / "v.mp4"
         media.touch()
         assert cli.main(["run", str(media)]) == 0
-        assert "api_key" in capsys.readouterr().err
+        assert "api_key" in capsys.readouterr().err  # 预检报告里的警告
+
+    def test_preflight_failure_blocks_with_exit_code_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """转录侧硬错误（模型路径不存在）同样在启动时拦下。"""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "asr:\n  model: /nonexistent/asr-model\ntranslate:\n  model: m\n  api_key: k\n",
+            encoding="utf-8",
+        )
+        # 保留真实的模型检查，只 stub 其余环境相关检查
+        monkeypatch.setattr(
+            preflight,
+            "check_ffmpeg",
+            lambda cfg: preflight.CheckResult("ffmpeg", preflight.STATUS_OK, "fake"),
+        )
+        monkeypatch.setattr(
+            preflight, "check_gpu", lambda: preflight.CheckResult("GPU", preflight.STATUS_OK, "fake")
+        )
+        monkeypatch.setattr(
+            preflight,
+            "test_translate_endpoint",
+            lambda cfg, **kw: preflight.EndpointTestResult(True, 1.0, "x"),
+        )
+
+        def boom(*a, **k):
+            raise AssertionError("预检未通过时不应调用 pipeline")
+
+        monkeypatch.setattr(pipeline, "run_pipeline", boom)
+        media = tmp_path / "v.mp4"
+        media.touch()
+        assert cli.main(["run", str(media)]) == 2
+        err = capsys.readouterr().err
+        assert "ASR 模型" in err and "路径不存在" in err
+
+    def test_skip_preflight_bypasses(self, mock_pipeline, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        media = tmp_path / "v.mp4"
+        media.touch()
+
+        def boom(*a, **k):
+            raise AssertionError("--skip-preflight 时不应执行预检")
+
+        monkeypatch.setattr(preflight, "run_preflight", boom)
+        assert cli.main(["run", str(media), "--skip-preflight"]) == 0
+        assert "run" in mock_pipeline
 
     def test_pipeline_error_returns_1(self, mock_pipeline, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)

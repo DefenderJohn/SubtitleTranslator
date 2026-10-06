@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
-from . import pipeline
+from . import pipeline, preflight
 from .config import default_config, load_config, resolve_api_key, save_config
 from .logsetup import register_secret, setup_logging
 from .models import SubtitleProject
@@ -60,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="直接对已有 .sub.json 跑后续阶段，不接触媒体文件（重翻/调术语后重跑）",
     )
     run.add_argument("--language", help="源语言（覆盖 asr.language，如 en；默认自动检测）")
+    run.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="跳过启动预检（不推荐；预检失败本该在启动时暴露而不是运行时才炸）",
+    )
 
     export = sub.add_parser("export", help="从已有 .sub.json 导出 SRT")
     export.add_argument("json_path", help="工程文件（xxx.sub.json）")
@@ -113,36 +118,43 @@ def _stderr_progress(event: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _check_translate_config(cfg) -> Optional[str]:
-    """翻译阶段的配置体检：缺 model 报错，缺 api_key 给指引（返回 None 表示通过）。"""
-    if not cfg.translate.model:
-        return (
-            "translate.model 未配置。请在 config.yaml 的 translate 节填写 model，"
-            "例如：\n  translate:\n    model: qwen2.5-7b-instruct\n"
-            "（可用 `subtitle-translator config init` 生成模板）"
-        )
-    if resolve_api_key(cfg) is None:
-        print(
-            "警告：未配置 translate.api_key。若端点需要鉴权，请在 config.yaml 设置\n"
-            "  api_key_env: 环境变量名   （推荐，密钥不落盘）\n"
-            "或明文 api_key（不推荐）。本地 vLLM / Ollama 无鉴权时可忽略本警告。",
-            file=sys.stderr,
-        )
-    return None
+def _preflight_progress(event: dict) -> None:
+    """预检耗时步骤（模型下载等）的进度提示。"""
+    print(f"[预检] {event.get('check', '')}: {event.get('message', '')}", file=sys.stderr, flush=True)
+
+
+def _run_preflight_or_exit(cfg, *, need_translate: bool, need_transcribe: bool) -> int:
+    """执行预检并打印报告；未通过返回退出码 2，通过返回 0。"""
+    report = preflight.run_preflight(
+        cfg,
+        need_translate=need_translate,
+        need_transcribe=need_transcribe,
+        progress_cb=_preflight_progress,
+    )
+    print("启动预检：", file=sys.stderr)
+    print(report.format_text(), file=sys.stderr)
+    if not report.ok:
+        return 2
+    return 0
 
 
 def _cmd_run(args) -> int:
     cfg = load_config(args.config)
     if args.language:
         cfg.asr.language = args.language
+    if not args.skip_preflight:
+        # --from-json 不接触媒体/模型，跳过转录侧检查；transcribe-only 不查翻译端点
+        rc = _run_preflight_or_exit(
+            cfg,
+            need_translate=not args.transcribe_only,
+            need_transcribe=not args.from_json,
+        )
+        if rc != 0:
+            return rc
     if args.transcribe_only:
         stages = ("transcribe", "export")
     else:
         stages = pipeline.PIPELINE_STAGES
-        error = _check_translate_config(cfg)
-        if error:
-            print(f"错误：{error}", file=sys.stderr)
-            return 1
 
     common = dict(
         stages=stages,
@@ -245,6 +257,17 @@ def _cmd_config_init(args) -> int:
 
 def _cmd_serve(args) -> int:
     cfg = load_config(args.config)
+    # 启动预检：ffmpeg / 模型问题硬错（进入服务即应 ready-to-use）；
+    # 只做存在性检查与必要的模型下载，模型加载仍留在首次任务时（启动要快）
+    rc = _run_preflight_or_exit(cfg, need_translate=False, need_transcribe=True)
+    if rc != 0:
+        return rc
+    # 翻译端点只警告不阻止启动：serve 是长期进程，用户可能只转录或稍后配 key
+    for check in preflight.check_translate(cfg):
+        if check.status == preflight.STATUS_OK:
+            continue
+        logger_hint = check.message.splitlines()[0] if check.message else check.status
+        print(f"警告：{check.name}: {logger_hint}", file=sys.stderr)
     host = args.host or cfg.ui.host
     port = args.port or cfg.ui.port
     try:
