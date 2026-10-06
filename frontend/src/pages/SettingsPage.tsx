@@ -2,6 +2,9 @@
  *
  * api_key 字段：显示 masked 值，留空表示不修改；
  * api_key_resolved=true 时显示绿色提示「已通过环境变量配置」。
+ * 翻译组「测试连接」：POST /api/config/test，携带当前表单内容（未保存也能测，
+ * api_key 留空沿用磁盘配置）。「系统检查」：POST /api/preflight，逐项展示
+ * ok/warn/fail。
  */
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -11,16 +14,38 @@ import {
   Form,
   Input,
   InputNumber,
+  List,
+  Modal,
   Select,
   Space,
   Tabs,
+  Tag,
+  Typography,
   message,
 } from "antd";
-import { api, type ConfigPayload } from "../api";
+import { CheckCircleOutlined, MedicineBoxOutlined } from "@ant-design/icons";
+import {
+  api,
+  type ConfigPayload,
+  type ConfigTestResult,
+  type PreflightCheck,
+  type PreflightReport,
+} from "../api";
+
+const CHECK_TAG: Record<PreflightCheck["status"], { color: string; label: string }> = {
+  ok: { color: "success", label: "通过" },
+  warn: { color: "warning", label: "警告" },
+  fail: { color: "error", label: "失败" },
+};
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<ConfigPayload | null>(null);
   const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<ConfigTestResult | null>(null);
+  const [preflightOpen, setPreflightOpen] = useState(false);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightReport, setPreflightReport] = useState<PreflightReport | null>(null);
   const [form] = Form.useForm();
 
   const load = useCallback(async () => {
@@ -67,10 +92,52 @@ export default function SettingsPage() {
     }
   };
 
+  /** 测试连接：携带当前表单内容（未保存也能测），api_key 留空沿用磁盘配置 */
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const values = { ...form.getFieldValue("translate") } as Record<string, unknown>;
+      delete values.api_key_resolved;
+      if (!values.api_key) values.api_key = "";
+      setTestResult(await api.testConfig(values));
+    } catch (err) {
+      // 请求本身失败（如配置非法 400）也按失败结果展示
+      setTestResult({
+        ok: false,
+        latency_ms: 0,
+        response_preview: "",
+        error: (err as Error).message,
+      });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const runPreflight = async () => {
+    setPreflightOpen(true);
+    setPreflightLoading(true);
+    try {
+      setPreflightReport(await api.runPreflight());
+    } catch (err) {
+      setPreflightReport(null);
+      message.error(`系统检查失败：${(err as Error).message}`);
+    } finally {
+      setPreflightLoading(false);
+    }
+  };
+
   if (!config) return <Card loading />;
 
   return (
-    <Card title="设置">
+    <Card
+      title="设置"
+      extra={
+        <Button icon={<MedicineBoxOutlined />} onClick={() => void runPreflight()}>
+          系统检查
+        </Button>
+      }
+    >
       {config.translate.api_key_resolved && (
         <Alert
           type="success"
@@ -223,6 +290,37 @@ export default function SettingsPage() {
                       <InputNumber min={0} max={10} style={{ width: 100 }} />
                     </Form.Item>
                   </Space>
+                  <Form.Item label="连通性">
+                    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                      <Button
+                        icon={<CheckCircleOutlined />}
+                        loading={testing}
+                        onClick={() => void testConnection()}
+                      >
+                        测试连接
+                      </Button>
+                      {testResult &&
+                        (testResult.ok ? (
+                          <Alert
+                            type="success"
+                            showIcon
+                            message={`连接成功，延迟 ${Math.round(testResult.latency_ms)} ms`}
+                            description={
+                              testResult.response_preview
+                                ? `响应预览：${testResult.response_preview}`
+                                : undefined
+                            }
+                          />
+                        ) : (
+                          <Alert
+                            type="error"
+                            showIcon
+                            message="连接失败"
+                            description={testResult.error ?? "未知错误"}
+                          />
+                        ))}
+                    </Space>
+                  </Form.Item>
                 </>
               ),
             },
@@ -257,6 +355,60 @@ export default function SettingsPage() {
           </Button>
         </Form.Item>
       </Form>
+
+      <Modal
+        title="系统检查（启动预检）"
+        open={preflightOpen}
+        onCancel={() => setPreflightOpen(false)}
+        footer={
+          <Button onClick={() => setPreflightOpen(false)}>关闭</Button>
+        }
+        width={640}
+      >
+        {preflightLoading ? (
+          <Typography.Text type="secondary">
+            检查中（翻译端点会发一条最小请求实测，可能需十几秒）…
+          </Typography.Text>
+        ) : preflightReport ? (
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Alert
+              type={preflightReport.ok ? "success" : "error"}
+              showIcon
+              message={
+                preflightReport.ok
+                  ? "预检通过，服务 ready-to-use"
+                  : "预检未通过：存在失败项，请先解决"
+              }
+            />
+            <List
+              size="small"
+              dataSource={preflightReport.checks}
+              renderItem={(check) => (
+                <List.Item>
+                  <Space direction="vertical" size={2} style={{ width: "100%" }}>
+                    <Space>
+                      <Tag color={CHECK_TAG[check.status]?.color ?? "default"}>
+                        {CHECK_TAG[check.status]?.label ?? check.status}
+                      </Tag>
+                      <Typography.Text strong>{check.name}</Typography.Text>
+                    </Space>
+                    {check.message && (
+                      <Typography.Text
+                        type={check.status === "fail" ? "danger" : "secondary"}
+                        style={{ fontSize: 12, whiteSpace: "pre-wrap" }}
+                      >
+                        {check.message}
+                      </Typography.Text>
+                    )}
+                  </Space>
+                </List.Item>
+              )}
+            />
+          </Space>
+        ) : (
+          <Typography.Text type="secondary">未能获取检查结果</Typography.Text>
+        )}
+      </Modal>
     </Card>
   );
 }

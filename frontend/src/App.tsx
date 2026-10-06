@@ -4,6 +4,7 @@ import { Link, Route, Routes, useLocation } from "react-router-dom";
 import TasksPage from "./pages/TasksPage";
 import TaskDetailPage from "./pages/TaskDetailPage";
 import SettingsPage from "./pages/SettingsPage";
+import { UploadDraftProvider } from "./uploadDraft";
 
 const { Sider, Header, Content } = Layout;
 
@@ -49,11 +50,13 @@ export default function App() {
       <Layout>
         <Header style={{ background: "#fff", padding: "0 24px" }} />
         <Content style={{ margin: 24 }}>
-          <Routes>
-            <Route path="/" element={<TasksPage />} />
-            <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
+          <UploadDraftProvider>
+            <Routes>
+              <Route path="/" element={<TasksPage />} />
+              <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </UploadDraftProvider>
         </Content>
       </Layout>
     </Layout>

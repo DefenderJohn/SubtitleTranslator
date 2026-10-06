@@ -1,10 +1,17 @@
-/** 任务页（默认页）：新建任务（服务器路径 / 浏览器上传两种模式）+ 任务列表（SSE 实时进度）。 */
+/** 任务页（默认页）：新建任务（服务器路径 / 浏览器上传两种模式）+ 任务列表（SSE 实时进度）。
+ *
+ * 新建任务的草稿（媒体来源 / 路径 / 上传列表 / 选项）放在全局 UploadDraftProvider
+ * （src/uploadDraft.tsx），切换路由不丢；server 重启后上传批次已被清理，挂载时
+ * 按批次目录探测（/api/media 404），失效给提示并允许一键清空，创建任务的 404 兜底。
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Button,
   Card,
   Form,
   Input,
+  Modal,
   Popconfirm,
   Progress,
   Segmented,
@@ -25,12 +32,14 @@ import {
 import { Link } from "react-router-dom";
 import {
   api,
+  ApiError,
   basename,
   type TaskEvent,
   type TaskSnapshot,
   type TaskStatus,
 } from "../api";
 import DirectoryBrowser from "../components/DirectoryBrowser";
+import { useUploadDraft, type SourceMode } from "../uploadDraft";
 
 export const STATUS_TAG: Record<TaskStatus, { color: string; label: string }> = {
   pending: { color: "gold", label: "排队中" },
@@ -43,17 +52,16 @@ export const STATUS_TAG: Record<TaskStatus, { color: string; label: string }> = 
 
 const ACTIVE_STATES: TaskStatus[] = ["pending", "running", "waiting_confirm"];
 
+/** pipeline 事件 stage → 中文阶段名（进度展示用） */
+export const STAGE_LABEL: Record<string, string> = {
+  transcribe: "转录",
+  translate: "翻译",
+  export: "导出",
+};
+
 // 与后端 MEDIA_EXTENSIONS 对齐（文件选择器过滤用；真正校验在服务端）
 const MEDIA_ACCEPT =
   ".flac,.m4a,.mp3,.mp4,.mpeg,.mpga,.oga,.ogg,.wav,.webm,.mkv,.mov,.avi,.m4v";
-
-type SourceMode = "path" | "upload";
-
-/** 上传成功的文件：uid（antd Upload）→ 服务器侧路径 */
-interface UploadedFile {
-  uid: string;
-  path: string;
-}
 
 interface FormValues {
   path: string;
@@ -63,14 +71,62 @@ interface FormValues {
   language?: string;
 }
 
+/** 任务列表「进度」列：按状态给出进度条 + 阶段文字 / 结果提示 */
+export function TaskProgressCell({ task }: { task: TaskSnapshot }) {
+  const p = task.progress;
+  switch (task.status) {
+    case "pending":
+      return <Typography.Text type="secondary">排队等待中</Typography.Text>;
+    case "waiting_confirm":
+      return <Typography.Text type="warning">等待术语确认</Typography.Text>;
+    case "done":
+      return <Typography.Text type="success">已完成</Typography.Text>;
+    case "failed":
+      return (
+        <Typography.Text type="danger">
+          {p?.message || "失败（详见任务日志）"}
+        </Typography.Text>
+      );
+    case "cancelled":
+      return <Typography.Text type="secondary">已取消，进度已保存</Typography.Text>;
+    case "running": {
+      if (!p) {
+        return <Typography.Text type="secondary">准备中…</Typography.Text>;
+      }
+      if (!p.total) {
+        return (
+          <Typography.Text type="secondary">
+            {p.message || "准备中…"}
+          </Typography.Text>
+        );
+      }
+      const stage = STAGE_LABEL[p.stage] ?? p.stage;
+      return (
+        <Space direction="vertical" size={0} style={{ width: "100%" }}>
+          <Progress
+            percent={Math.round((p.done / p.total) * 100)}
+            size="small"
+            status="active"
+          />
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {stage}中 {p.done}/{p.total}
+            {p.message && p.message !== `${stage} ${p.done}/${p.total}`
+              ? `（${p.message}）`
+              : ""}
+          </Typography.Text>
+        </Space>
+      );
+    }
+  }
+}
+
 export default function TasksPage() {
   const [tasks, setTasks] = useState<TaskSnapshot[]>([]);
   const [loading, setLoading] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [mode, setMode] = useState<SourceMode>("path");
-  const [fileList, setFileList] = useState<UploadFile[]>([]);
-  const [uploaded, setUploaded] = useState<UploadedFile[]>([]);
+  const [staleUploads, setStaleUploads] = useState(false);
+  const { draft, dispatch } = useUploadDraft();
   const [form] = Form.useForm<FormValues>();
   // taskId -> EventSource，组件卸载时统一关闭
   const sourcesRef = useRef<Map<string, EventSource>>(new Map());
@@ -132,6 +188,30 @@ export default function TasksPage() {
     syncSubscriptions(tasks);
   }, [tasks, syncSubscriptions]);
 
+  // 失效批次探测：草稿里的上传文件可能已随 server 重启被清理，
+  // 逐批次目录查 /api/media（目录不存在 404），失效则提示一键清空
+  useEffect(() => {
+    if (!draft.uploaded.length) return;
+    const batches = Array.from(new Set(draft.uploaded.map((u) => u.batch)));
+    let cancelled = false;
+    void (async () => {
+      for (const batch of batches) {
+        try {
+          await api.browseMedia(batch);
+        } catch (err) {
+          if (!cancelled && err instanceof ApiError && err.status === 404) {
+            setStaleUploads(true);
+            return;
+          }
+          // 网络类错误不误判为失效，下次进页面再探
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [draft.uploaded]);
+
   /** 直传 /api/upload（自定义请求，逐文件显示进度），成功后记下服务器侧路径 */
   const uploadRequest: UploadProps["customRequest"] = async (options) => {
     const { file, onProgress, onSuccess, onError } = options;
@@ -140,10 +220,11 @@ export default function TasksPage() {
       const resp = await api.uploadFile(file as File, (percent) =>
         onProgress?.({ percent }),
       );
-      setUploaded((prev) => [
-        ...prev,
-        { uid: uploadFile.uid, path: resp.paths[0] },
-      ]);
+      dispatch({
+        type: "addUploaded",
+        entry: { uid: uploadFile.uid, path: resp.paths[0], batch: resp.batch },
+      });
+      setStaleUploads(false);
       onSuccess?.(resp);
     } catch (err) {
       message.error(`上传失败：${(err as Error).message}`);
@@ -154,10 +235,12 @@ export default function TasksPage() {
   const createTask = async (values: FormValues) => {
     // 上传模式：每个已上传文件一个任务；路径模式：单路径（文件或目录）
     const paths =
-      mode === "upload" ? uploaded.map((u) => u.path) : [values.path.trim()];
+      draft.mode === "upload"
+        ? draft.uploaded.map((u) => u.path)
+        : [values.path.trim()];
     if (!paths.length || !paths[0]) {
       message.warning(
-        mode === "upload" ? "请先上传文件" : "请输入路径或点浏览选择",
+        draft.mode === "upload" ? "请先上传文件" : "请输入路径或点浏览选择",
       );
       return;
     }
@@ -177,13 +260,39 @@ export default function TasksPage() {
       message.success(
         `已创建 ${created.length} 个任务：${paths.map(basename).join("、")}`,
       );
-      form.resetFields();
-      setFileList([]);
-      setUploaded([]);
+      // 清空草稿并同步表单（initialValues 只在挂载时生效，需显式回写默认值）
+      dispatch({ type: "reset" });
+      form.setFieldsValue({
+        path: "",
+        auto_confirm: false,
+        bilingual: true,
+        transcribe_only: false,
+        language: "",
+      });
+      setStaleUploads(false);
       setTasks((prev) => [...prev, ...created]);
       syncSubscriptions([...tasks, ...created]);
     } catch (err) {
-      message.error(`创建任务失败：${(err as Error).message}`);
+      // 兜底：上传批次已在 server 侧被清理（重启/退出清理），草稿路径失效
+      if (
+        draft.mode === "upload" &&
+        err instanceof ApiError &&
+        err.status === 404
+      ) {
+        Modal.confirm({
+          title: "上传的文件已不在服务器上",
+          content:
+            "服务重启后上传的临时副本会被清理，当前草稿里的文件路径已失效。清空上传列表后请重新上传。",
+          okText: "清空上传列表",
+          cancelText: "保留",
+          onOk: () => {
+            dispatch({ type: "clearUploads" });
+            setStaleUploads(false);
+          },
+        });
+      } else {
+        message.error(`创建任务失败：${(err as Error).message}`);
+      }
     } finally {
       setSubmitting(false);
     }
@@ -206,25 +315,35 @@ export default function TasksPage() {
           form={form}
           layout="vertical"
           initialValues={{
-            path: "",
-            auto_confirm: false,
-            bilingual: true,
-            transcribe_only: false,
-            language: "",
+            path: draft.path,
+            auto_confirm: draft.options.auto_confirm,
+            bilingual: draft.options.bilingual,
+            transcribe_only: draft.options.transcribe_only,
+            language: draft.options.language,
+          }}
+          onValuesChange={(changed: Partial<FormValues>) => {
+            // 草稿随表单输入同步到全局，切换路由回来不丢
+            if (changed.path !== undefined) {
+              dispatch({ type: "setPath", path: changed.path });
+            }
+            const { path: _path, ...opts } = changed;
+            if (Object.keys(opts).length) {
+              dispatch({ type: "setOptions", options: opts });
+            }
           }}
           onFinish={createTask}
         >
           <Form.Item label="媒体来源">
             <Segmented<SourceMode>
-              value={mode}
-              onChange={setMode}
+              value={draft.mode}
+              onChange={(mode) => dispatch({ type: "setMode", mode })}
               options={[
                 { label: "服务器路径", value: "path" },
                 { label: "上传文件", value: "upload" },
               ]}
             />
           </Form.Item>
-          {mode === "path" ? (
+          {draft.mode === "path" ? (
             <Form.Item
               label="媒体文件或目录路径"
               name="path"
@@ -244,20 +363,40 @@ export default function TasksPage() {
             <Form.Item
               label="上传本地文件"
               extra={
-                uploaded.length > 0
-                  ? `已上传 ${uploaded.length} 个文件，提交后每个文件创建一个任务`
+                draft.uploaded.length > 0
+                  ? `已上传 ${draft.uploaded.length} 个文件，提交后每个文件创建一个任务`
                   : undefined
               }
             >
+              {staleUploads && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message="之前上传的文件已不在服务器上"
+                  description="服务重启后上传的临时副本会被清理，草稿里的文件路径已失效，请重新上传。"
+                  action={
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        dispatch({ type: "clearUploads" });
+                        setStaleUploads(false);
+                      }}
+                    >
+                      清空上传列表
+                    </Button>
+                  }
+                />
+              )}
               <Upload.Dragger
                 multiple
                 accept={MEDIA_ACCEPT}
                 customRequest={uploadRequest}
-                fileList={fileList}
-                onChange={({ fileList }) => setFileList(fileList)}
-                onRemove={(file) => {
-                  setUploaded((prev) => prev.filter((u) => u.uid !== file.uid));
-                }}
+                fileList={draft.fileList}
+                onChange={({ fileList }) =>
+                  dispatch({ type: "setFileList", fileList })
+                }
+                onRemove={(file) => dispatch({ type: "removeUploaded", uid: file.uid })}
               >
                 <p className="ant-upload-drag-icon">
                   <InboxOutlined />
@@ -359,29 +498,8 @@ export default function TasksPage() {
             },
             {
               title: "进度",
-              width: 240,
-              render: (_, task) => {
-                const p = task.progress;
-                if (!p || !p.total) {
-                  return (
-                    <Typography.Text type="secondary">
-                      {p?.message || "—"}
-                    </Typography.Text>
-                  );
-                }
-                return (
-                  <Space direction="vertical" size={0} style={{ width: "100%" }}>
-                    <Progress
-                      percent={Math.round((p.done / p.total) * 100)}
-                      size="small"
-                      status={task.status === "failed" ? "exception" : "active"}
-                    />
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                      {p.message || `${p.stage} ${p.done}/${p.total}`}
-                    </Typography.Text>
-                  </Space>
-                );
-              },
+              width: 260,
+              render: (_, task) => <TaskProgressCell task={task} />,
             },
             {
               title: "创建时间",
@@ -418,6 +536,7 @@ export default function TasksPage() {
         onCancel={() => setBrowserOpen(false)}
         onSelect={(path) => {
           form.setFieldValue("path", path);
+          dispatch({ type: "setPath", path });
           setBrowserOpen(false);
         }}
       />

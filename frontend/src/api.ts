@@ -13,7 +13,7 @@ export type TaskStatus =
   | "failed"
   | "cancelled";
 
-/** pipeline 事件协议五键 + task_id + status（SSE 与任务快照共用） */
+/** pipeline 事件协议五键 + task_id + status + time（SSE 与任务快照共用） */
 export interface TaskEvent {
   task_id: string;
   status: TaskStatus;
@@ -22,12 +22,14 @@ export interface TaskEvent {
   done: number;
   total: number;
   message: string;
+  time: number; // epoch 秒（server 记录，ETA / 阶段耗时估算用）
 }
 
 export interface TaskSnapshot {
   id: string;
   path: string;
   media: string[];
+  options: TaskOptions; // 创建任务时的选项快照
   status: TaskStatus;
   created_at: number;
   error: string | null;
@@ -125,6 +127,26 @@ export interface LogConfigPayload {
 export interface UploadResponse {
   batch: string;
   paths: string[];
+}
+
+/** POST /api/config/test 响应：翻译端点连通性测试 */
+export interface ConfigTestResult {
+  ok: boolean;
+  latency_ms: number;
+  response_preview: string; // 前 50 字符
+  error: string | null;
+}
+
+/** POST /api/preflight 响应：启动预检报告（有 fail 即 ok=false） */
+export interface PreflightCheck {
+  name: string;
+  status: "ok" | "warn" | "fail";
+  message: string;
+}
+
+export interface PreflightReport {
+  ok: boolean;
+  checks: PreflightCheck[];
 }
 
 export interface ConfigPayload {
@@ -287,6 +309,15 @@ export const api = {
   /** 局部更新：只传改动节；api_key 传空字符串 / mask 值表示不修改 */
   updateConfig: (payload: Partial<ConfigPayload>) =>
     request<ConfigPayload>("/api/config", jsonBody("PUT", payload)),
+  /** 翻译端点连通性测试；translate 携带未保存的表单值，缺省用磁盘 config */
+  testConfig: (translate?: Record<string, unknown>) =>
+    request<ConfigTestResult>(
+      "/api/config/test",
+      jsonBody("POST", translate ? { translate } : {}),
+    ),
+  /** 完整启动预检（设置页「系统检查」入口） */
+  runPreflight: () =>
+    request<PreflightReport>("/api/preflight", { method: "POST" }),
 };
 
 // ---------------------------------------------------------------- 工具
