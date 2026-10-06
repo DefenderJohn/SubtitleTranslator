@@ -153,7 +153,7 @@ JSON schema：
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
 - 分三节：`asr` / `translate` / `ui`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）。
+- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）；`ui.host=127.0.0.1`、`ui.port=7860`、`ui.upload_dir=""`（空=`~/.subtitle_translator/uploads`，`resolve_upload_dir` 解析，支持 `~` 展开）。
 
 ## 8. 网页（server/ + frontend/）
 
@@ -179,7 +179,8 @@ JSON schema：
 - **每次执行任务重新加载 config.yaml**：网页改配置对后续任务生效。
 - **CORS**：允许 localhost / 127.0.0.1 任意端口（vite dev server）。
 - **静态托管**：`frontend/dist` 存在时挂载到 `/`（前端路由回退 index.html，SPA fallback），不存在时 `/` 返回占位提示页；API 路由优先于静态挂载。
-- **路径安全**：本工具是 localhost 单用户工具，API 的路径参数就是本机文件路径（选文件/浏览目录是功能本身），不做沙箱化。
+- **路径安全**：本工具是 localhost 单用户工具，API 的路径参数就是本机文件路径（选文件/浏览目录是功能本身），不做沙箱化。唯一收紧的是下载端点（见 §8.2 `/api/download`）：只允许 `.srt` / `.sub.json` 产物或 upload_dir 内的文件，不裸奔任意文件读。
+- **浏览器上传**：`POST /api/upload` 接收 multipart 多文件，流式分块写盘（视频可达 GB 级，不整个读进内存）；文件名取 basename 防路径穿越、扩展名复用 MEDIA_EXTENSIONS 白名单校验（整批先校验后写盘）、同批/盘上撞名自动加 `_2` 后缀去重；每次上传建独立批次子目录 `upload_dir/YYYYMMDD-HHMMSS-xxxxxx/`，避免同名文件互相覆盖。返回的服务器侧路径直接拿去走 `POST /api/tasks`，复用同一套任务/pipeline 机制；上传文件的字幕校对视频预览经 `/api/video?path=` 天然可用。
 
 ### 8.2 API 清单
 
@@ -188,13 +189,15 @@ JSON schema：
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/tasks` | 创建任务：body `{path, options{auto_confirm, bilingual, transcribe_only, language}}`，path 文件/目录自动判断，返回任务快照（含 id） |
-| GET | `/api/tasks` | 任务列表（id、path、media、status、progress 快照、created_at） |
-| GET | `/api/tasks/{id}` | 任务详情 |
+| GET | `/api/tasks` | 任务列表（id、path、media、status、progress 快照、artifacts、created_at） |
+| GET | `/api/tasks/{id}` | 任务详情（artifacts 为已存在的导出 SRT 路径列表，可经 `/api/download` 下载） |
 | GET | `/api/tasks/{id}/events` | SSE 订阅（历史回放 + 实时推送，终态关流） |
 | POST | `/api/tasks/{id}/cancel` | 取消（协作式）；终态返回 409 |
 | POST | `/api/tasks/{id}/resume` | waiting_confirm 任务重新排队继续；其他状态 409 |
 | GET | `/api/media?path=` | 浏览目录：返回子目录名 + 递归媒体文件清单（复用 find_media_files）；path 省略/为空时默认用户主目录；遍历中无权限/不可读的条目跳过，不因权限问题 500 |
 | GET | `/api/video?path=` | 视频流，支持单区间 Range（bytes=start-end / start- / -suffix），206 + Content-Range，非法区间 416 |
+| POST | `/api/upload` | 浏览器上传：multipart 字段 `files`（可多文件），流式写盘到 `ui.upload_dir` 的批次子目录，返回 `{batch, paths}`；paths 直接用于创建任务 |
+| GET | `/api/download?path=` | 下载产物（Content-Disposition attachment）；仅允许 `.srt` / `.sub.json` 文件或 upload_dir 内的文件，其余 403，不存在 404 |
 
 工程数据（JSON 是唯一事实来源，直接读写 `.sub.json`；path 参数传 `.sub.json` 或对应媒体文件路径均可）：
 
@@ -204,7 +207,7 @@ JSON schema：
 | PATCH | `/api/project/cues` | 编辑单条 cue 的 text/translation（body 含 path、cue_id） |
 | GET | `/api/project/glossary?path=` | 读术语表 |
 | PATCH | `/api/project/glossary` | 改术语（updates 按 src 匹配，可改 dst / new_src）、按 src confirm 单条或 confirm_all |
-| POST | `/api/project/export` | 对工程导出 SRT（bilingual 参数），返回 srt_path |
+| POST | `/api/project/export` | 对工程导出 SRT（bilingual 参数），返回 srt_path 与 download_url |
 
 配置：
 

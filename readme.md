@@ -23,6 +23,7 @@ subtitle-translator config init
 subtitle-translator run movie.mp4 --auto-confirm
 
 # 4b. 或网页：浏览器打开 http://127.0.0.1:7860
+#     （支持直接拖拽上传本地文件，落到 ~/.subtitle_translator/uploads）
 subtitle-translator serve
 ```
 
