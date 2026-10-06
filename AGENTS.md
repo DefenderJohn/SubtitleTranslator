@@ -31,7 +31,7 @@ SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 
 ├── frontend/                   # React + Ant Design 5 + TypeScript（Vite 构建，
 │                               #   dist 由 server 托管）；src/api.ts 集中 API 封装，
 │                               #   uploadDraft.tsx 新建任务草稿全局 context（切路由不丢），
-│                               #   pages/(任务/任务详情/设置) + components/(目录浏览/术语表/cue 校对)
+│                               #   pages/(任务/任务详情/设置) + components/(目录浏览/术语表/cue 校对/ErrorBoundary 路由兜底)
 ├── tests/                      # pytest
 ├── docs/DESIGN.md              # 设计定案
 ├── docs/ENVIRONMENT.md         # 环境摸底

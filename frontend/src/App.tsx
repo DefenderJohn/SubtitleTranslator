@@ -4,6 +4,7 @@ import { Link, Route, Routes, useLocation } from "react-router-dom";
 import TasksPage from "./pages/TasksPage";
 import TaskDetailPage from "./pages/TaskDetailPage";
 import SettingsPage from "./pages/SettingsPage";
+import ErrorBoundary from "./components/ErrorBoundary";
 import { UploadDraftProvider } from "./uploadDraft";
 
 const { Sider, Header, Content } = Layout;
@@ -51,11 +52,14 @@ export default function App() {
         <Header style={{ background: "#fff", padding: "0 24px" }} />
         <Content style={{ margin: 24 }}>
           <UploadDraftProvider>
-            <Routes>
-              <Route path="/" element={<TasksPage />} />
-              <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
-            </Routes>
+            {/* key 按路径重挂载：崩溃后点「返回任务列表」即恢复，不需整页刷新 */}
+            <ErrorBoundary key={location.pathname}>
+              <Routes>
+                <Route path="/" element={<TasksPage />} />
+                <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+              </Routes>
+            </ErrorBoundary>
           </UploadDraftProvider>
         </Content>
       </Layout>

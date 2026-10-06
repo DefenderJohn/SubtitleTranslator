@@ -55,7 +55,9 @@ export interface Cue {
   start: number;
   end: number;
   text: string;
-  translation: string;
+  /** 未翻译的 cue 为 null（后端 models.py Cue.translation 是 Optional[str]），
+   * 渲染前必须 ?? ""，不能当 string 直接用 */
+  translation: string | null;
   words: WordTiming[];
   flags: string[]; // translation_failed / glossary_miss:<src>
 }

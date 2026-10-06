@@ -30,8 +30,10 @@ interface Props {
 }
 
 /** 术语后校验未命中的标记（glossary_miss:<src>） */
+const cueFlags = (cue: Cue): string[] => cue.flags ?? [];
+
 const isGlossaryMiss = (cue: Cue) =>
-  cue.flags.some((f) => f.startsWith("glossary_miss:"));
+  cueFlags(cue).some((f) => f.startsWith("glossary_miss:"));
 
 export default function CueTable({ path, videoPath, project, onProjectChange }: Props) {
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -68,8 +70,9 @@ export default function CueTable({ path, videoPath, project, onProjectChange }: 
     return <Empty description="工程文件尚未生成（转录完成后可校对）" />;
   }
 
-  const cues = project.cues;
-  const translatedCount = cues.filter((c) => c.translation.trim()).length;
+  const cues = project.cues ?? [];
+  // translation 在逐句翻译前是 null（后端 Optional[str]），统计时按空串处理
+  const translatedCount = cues.filter((c) => (c.translation ?? "").trim()).length;
   const markedCount = cues.filter(isGlossaryMiss).length;
   const shown = onlyMarked ? cues.filter(isGlossaryMiss) : cues;
 
@@ -117,7 +120,7 @@ export default function CueTable({ path, videoPath, project, onProjectChange }: 
         {
           title: "译文",
           render: (_, cue) => {
-            const misses = cue.flags.filter((f) => f.startsWith("glossary_miss:"));
+            const misses = cueFlags(cue).filter((f) => f.startsWith("glossary_miss:"));
             if (editingId === cue.id) {
               return (
                 <Space direction="vertical" style={{ width: "100%" }}>
@@ -158,7 +161,7 @@ export default function CueTable({ path, videoPath, project, onProjectChange }: 
                     onClick={(e) => {
                       e.stopPropagation();
                       setEditingId(cue.id);
-                      setDraft(cue.translation);
+                      setDraft(cue.translation ?? "");
                     }}
                   />
                 </Space>
@@ -167,7 +170,7 @@ export default function CueTable({ path, videoPath, project, onProjectChange }: 
                     术语未命中：{flag.slice("glossary_miss:".length)}
                   </Tag>
                 ))}
-                {cue.flags.includes("translation_failed") && (
+                {cueFlags(cue).includes("translation_failed") && (
                   <Tag color="red" style={{ fontSize: 12 }}>
                     翻译失败（保留原文占位）
                   </Tag>

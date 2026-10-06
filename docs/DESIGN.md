@@ -147,6 +147,7 @@ JSON schema：
 - `stage` 取值：`empty`（初始态，尚未转录）→ `transcribed` → `contexted` → `translated`，驱动断点续传。
 - `words` 词级时间戳为未来功能（波形修轴、剪辑）预留。
 - `cues[].flags` 为翻译层标记列表，当前取值：`translation_failed`（重试后仍失败，保留原文占位）、`glossary_miss:<src>`（术语后校验未命中）。
+- `cues[].translation` 在逐句翻译开始前为 `null`（未翻译），翻译后为字符串；前端必须按可空处理。
 - 序列化约定：缺字段给默认值；`version` 与当前 SCHEMA_VERSION 不匹配时抛出 `SchemaVersionError`；非法 `stage` 抛 `ValueError`。
 - SRT 导出语义：双语导出译文在上、原文在下（与旧版一致）；单语导出优先译文、无译文退化为原文。
 
@@ -162,7 +163,7 @@ JSON schema：
 
 - 后端：FastAPI（REST + SSE 进度推送 + Range 请求视频流）。
 - 前端：React + Ant Design，Vite 构建。
-- 页面结构：任务页（新建任务草稿放全局 context，切路由不丢；上传批次失效有探测 + 一键清空）、详情页（头部操作组 + Steps 五阶段进度【转录→建档→术语确认→翻译→导出，当前阶段给进度条与 ETA】+ Tabs【字幕校对（含统计/标记过滤）/ 术语表（stage ≥ contexted 随时可看可改）/ 摘要 / 运行信息（选项快照 + 阶段耗时 + 失败 cue + 事件记录）】，project JSON 只是可选增强，404 一律空态不报错）、设置页（翻译「测试连接」带当前表单测、`POST /api/preflight`「系统检查」）。
+- 页面结构：任务页（新建任务草稿放全局 context，切路由不丢；上传批次失效有探测 + 一键清空）、详情页（头部操作组 + Steps 五阶段进度【转录→建档→术语确认→翻译→导出，当前阶段给进度条与 ETA】+ Tabs【字幕校对（含统计/标记过滤）/ 术语表（stage ≥ contexted 随时可看可改）/ 摘要 / 运行信息（选项快照 + 阶段耗时 + 失败 cue + 事件记录）】，project JSON 只是可选增强，404 一律空态不报错）、设置页（翻译「测试连接」带当前表单测、`POST /api/preflight`「系统检查」）。路由级 ErrorBoundary 兜底：任何渲染崩溃显示错误信息 + 组件堆栈摘要 + 「返回任务列表」，不再无声白屏。
 - 波形修轴和剪辑是未来功能；数据格式已预留（words 词级时间戳）。
 
 ### 8.1 server 架构（localhost 单用户）

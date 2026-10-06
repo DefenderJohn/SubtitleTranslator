@@ -98,7 +98,7 @@ export default function GlossaryPanel({
     return <Empty description="术语表尚未生成（建档完成后可查看、编辑）" />;
   }
 
-  const glossary = project.glossary;
+  const glossary = project.glossary ?? [];
   const confirmedCount = glossary.filter((g) => g.confirmed).length;
   const waiting = taskStatus === "waiting_confirm";
 

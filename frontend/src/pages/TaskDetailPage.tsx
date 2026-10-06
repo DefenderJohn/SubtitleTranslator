@@ -333,8 +333,9 @@ export default function TaskDetailPage() {
       duration: formatDuration(firstEventTime - task.created_at),
     });
   }
-  const failedCues: Cue[] =
-    project?.cues.filter((c) => c.flags.includes("translation_failed")) ?? [];
+  const failedCues: Cue[] = (project?.cues ?? []).filter((c) =>
+    (c.flags ?? []).includes("translation_failed"),
+  );
 
   const canAct =
     task.status === "pending" ||
@@ -395,7 +396,7 @@ export default function TaskDetailPage() {
               size="small"
               icon={<ExportOutlined />}
               loading={exporting}
-              disabled={!project || !project.cues.length}
+              disabled={!project?.cues?.length}
               onClick={() => void doExport()}
             >
               导出 SRT
@@ -547,18 +548,18 @@ export default function TaskDetailPage() {
                   {project ? (
                     <Descriptions title="工程信息" size="small" column={2}>
                       <Descriptions.Item label="ASR 模型">
-                        {project.models.asr}
+                        {project.models?.asr || "—"}
                       </Descriptions.Item>
                       <Descriptions.Item label="翻译模型">
-                        {project.models.translator || "—"}
+                        {project.models?.translator || "—"}
                       </Descriptions.Item>
                       <Descriptions.Item label="媒体时长">
-                        {project.source.duration
+                        {project.source?.duration
                           ? formatDuration(project.source.duration)
                           : "—"}
                       </Descriptions.Item>
                       <Descriptions.Item label="语种">
-                        {project.source.language || "—"}
+                        {project.source?.language || "—"}
                       </Descriptions.Item>
                     </Descriptions>
                   ) : (
