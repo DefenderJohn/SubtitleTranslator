@@ -15,15 +15,17 @@ interface Props {
 }
 
 export default function DirectoryBrowser({ open, onSelect, onCancel }: Props) {
-  const [current, setCurrent] = useState<string>("/");
+  // 空字符串 = 让后端给默认起点（用户主目录）
+  const [current, setCurrent] = useState<string>("");
   const [data, setData] = useState<MediaBrowse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async (path: string) => {
     setLoading(true);
     try {
-      setData(await api.browseMedia(path));
-      setCurrent(path);
+      const result = await api.browseMedia(path);
+      setData(result);
+      setCurrent(result.path);
     } catch (err) {
       message.error(`无法浏览目录：${(err as Error).message}`);
     } finally {
