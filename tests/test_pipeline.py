@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -131,6 +132,23 @@ class TestFindMediaFiles:
             return real_is_file(self)
 
         monkeypatch.setattr(Path, "is_file", fake_is_file)
+        assert find_media_files(tmp_path) == [tmp_path / "good.mp4"]
+
+    def test_unreadable_subdir_skipped(self, tmp_path, monkeypatch):
+        """下降进入无权限子目录（scandir 抛错）时跳过整棵子树，不抛异常。"""
+        (tmp_path / "good.mp4").touch()
+        bad = tmp_path / "secret"
+        bad.mkdir()
+        (bad / "hidden.mp4").touch()
+
+        real_scandir = os.scandir
+
+        def fake_scandir(p):
+            if str(p) == str(bad):
+                raise PermissionError(13, "Permission denied", str(p))
+            return real_scandir(p)
+
+        monkeypatch.setattr(os, "scandir", fake_scandir)
         assert find_media_files(tmp_path) == [tmp_path / "good.mp4"]
 
 

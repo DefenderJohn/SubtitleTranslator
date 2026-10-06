@@ -24,6 +24,7 @@ contexted，重跑自动跳过已翻译条目），``run_batch`` 遇取消停止
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Union
@@ -107,7 +108,8 @@ def find_media_files(path: Union[str, Path]) -> list[Path]:
 
     - path 是文件：校验扩展名后直接使用（不合法抛 ValueError）；
     - path 是目录：递归查找全部媒体文件，按路径排序；
-      遍历中遇到无权限/不可读的条目（如 /root、挂载点残留）跳过继续；
+      遍历中遇到无权限/不可读的条目（如 /root、挂载点残留）跳过继续
+      （os.walk 默认忽略 scandir 的 OSError；逐条 stat 再兜底）；
     - path 不存在抛 FileNotFoundError。
     """
     path = Path(path)
@@ -121,12 +123,16 @@ def find_media_files(path: Union[str, Path]) -> list[Path]:
             )
         return [path]
     found = []
-    for p in path.rglob("*"):
-        try:
-            if p.is_file() and p.suffix.lower().lstrip(".") in MEDIA_EXTENSIONS:
-                found.append(p)
-        except OSError:
-            continue
+    for root, _dirnames, filenames in os.walk(path):
+        for name in filenames:
+            p = Path(root) / name
+            if p.suffix.lower().lstrip(".") not in MEDIA_EXTENSIONS:
+                continue
+            try:
+                if p.is_file():
+                    found.append(p)
+            except OSError:
+                continue
     return sorted(found)
 
 
