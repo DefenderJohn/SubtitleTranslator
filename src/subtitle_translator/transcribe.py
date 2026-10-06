@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -34,6 +35,44 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # ASR backend 抽象
 # ---------------------------------------------------------------------------
+
+
+def _is_local_model_path(value: str) -> bool:
+    """模型标识是本地存在的目录（相对于 hub ID 如 ``Qwen/Qwen3-ASR-1.7B``）。"""
+    try:
+        return Path(str(value)).expanduser().is_dir()
+    except (OSError, ValueError):
+        return False
+
+
+def _enable_offline_mode() -> None:
+    """强制 transformers / huggingface_hub 进入离线模式。
+
+    两个环境变量都在对应库首次 import 时读取，必须在 import 之前设置；
+    qwen_asr（及其依赖的 transformers）在 load() 内才延迟 import，
+    因此在 load() 开头设置即可生效。设为进程级、只设不还原：离线判定
+    针对本进程将要加载的本地模型，不影响其他功能。
+    """
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+
+def _offline_extra(asr: AsrConfig) -> dict:
+    """asr.model 与 aligner_model 都是本地目录时，强制离线加载。
+
+    返回透传给 from_pretrained 的额外 kwargs（``local_files_only=True``）；
+    同时设置 HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE 环境变量，堵住
+    qwen-asr 内部不透传 kwargs 的加载点（如 AutoProcessor）。
+    任一项是 hub ID 时维持现状（允许联网下载）。
+    """
+    if _is_local_model_path(asr.model) and _is_local_model_path(asr.aligner_model):
+        _enable_offline_mode()
+        logger.info(
+            "asr.model / aligner_model 均为本地路径，已启用 HF 离线模式"
+            "（HF_HUB_OFFLINE=1，local_files_only=True），加载不会访问网络"
+        )
+        return {"local_files_only": True}
+    return {}
 
 
 def _import_qwen_asr():
@@ -183,6 +222,9 @@ class VllmBackend(AsrBackend):
     def load(self) -> None:
         if self._model is not None:
             return
+        # 本地模型路径时强制离线；extra 只透传给 forced aligner（vLLM 的
+        # LLM() 不认识 local_files_only，主模型离线由环境变量保证）
+        extra = _offline_extra(self.cfg)
         Qwen3ASRModel = _import_qwen_asr()
         dtype = _resolve_dtype(self.cfg.dtype)
         try:
@@ -191,7 +233,9 @@ class VllmBackend(AsrBackend):
                 dtype=self.cfg.dtype,  # vLLM 侧接受字符串 dtype
                 gpu_memory_utilization=0.85,
                 forced_aligner=self.cfg.aligner_model,
-                forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device),
+                forced_aligner_kwargs=dict(
+                    dtype=dtype, device_map=self.cfg.device, **extra
+                ),
             )
         except ImportError as exc:
             raise RuntimeError(
@@ -216,6 +260,8 @@ class TransformersBackend(AsrBackend):
     def load(self) -> None:
         if self._model is not None:
             return
+        # 本地模型路径时强制离线（环境变量 + local_files_only 双保险）
+        extra = _offline_extra(self.cfg)
         Qwen3ASRModel = _import_qwen_asr()
         dtype = _resolve_dtype(self.cfg.dtype)
         self._model = Qwen3ASRModel.from_pretrained(
@@ -223,7 +269,8 @@ class TransformersBackend(AsrBackend):
             dtype=dtype,
             device_map=self.cfg.device,
             forced_aligner=self.cfg.aligner_model,
-            forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device),
+            forced_aligner_kwargs=dict(dtype=dtype, device_map=self.cfg.device, **extra),
+            **extra,
         )
 
     def transcribe_chunk(self, audio_path, language=None):

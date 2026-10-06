@@ -273,6 +273,9 @@ subtitle-translator serve --port 8000 --host 0.0.0.0   # 临时覆盖
 **显存不够 / OOM**
 换小模型：`asr.model` 改成 `Qwen/Qwen3-ASR-0.6B`（对齐器本来就是 0.6B）。同时确认 `dtype: float16`、没有重复加载模型的其他进程占显存。
 
+**`OSError: We couldn't connect to 'https://hf-mirror.com' to load the files, and couldn't find them in the cached files.`（或 huggingface.co 同类报错）**
+模型加载时访问了 Hugging Face hub 且连不上。原因：config 里 `asr.model` / `asr.aligner_model` 填的是 hub ID（如 `Qwen/Qwen3-ASR-1.7B`），而模型文件不在 HF 缓存里（比如是用 modelscope 下载到别的目录的）。解法：把这两个字段改成模型在磁盘上的本地目录路径（如 `/path/to/models/Qwen3-ASR-1.7B`）。两者都是本地路径时，工具会自动启用离线模式（`HF_HUB_OFFLINE=1` + `local_files_only=True`），加载过程完全不联网；填 hub ID 时才允许联网下载。
+
 **语言识别错了**
 `--language en`（或 zh/ja 等 ISO 代码）指定源语言，也可在 config 的 `asr.language` 固定。注意填 ISO 代码或规范语言名（English/Chinese 等），乱填会被 ASR 拒绝。
 

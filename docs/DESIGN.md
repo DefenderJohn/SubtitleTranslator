@@ -86,6 +86,7 @@ subtitle-translator config init [path]
   - `language` 参数只接受规范语言名（"English"/"Chinese" 等 30 种）；`_normalize_language` 把 ISO 代码（en/zh/ja...）映射为规范名，其余值透传由 qwen-asr 校验。
   - `from_pretrained` 的 `dtype` 是 torch 对象（`_resolve_dtype` 把配置字符串转过去）；forced aligner 经 `forced_aligner_kwargs` 传 dtype/device_map。
 - 两个 backend：**transformers（`.from_pretrained(...)`，默认）与 vLLM（`Qwen3ASRModel.LLM(...)`，可选加速）**，做成配置项 `asr.backend`，对上层接口零差异（`AsrBackend` 抽象：`load()` / `transcribe_chunk(audio_path, language)` / `unload()`）。默认 transformers 的原因：Turing（sm_75）等老卡兼容性 + 依赖更轻（vLLM 单列 `asr-vllm` extra）。`qwen_asr` 在 `load()` 内延迟 import，未安装时模块仍可 import、`load()` 报清晰错误；vllm 缺失时报错指向 `asr-vllm` extra。
+- **本地模型离线加载**：`asr.model` 与 `asr.aligner_model` 都是本地存在的目录时（`_is_local_model_path`），`load()` 在 import qwen_asr 之前设置 `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1`，并向 `from_pretrained` / `forced_aligner_kwargs` 透传 `local_files_only=True`（环境变量是兜底：qwen-asr 内部的 AutoProcessor 加载不透传 kwargs）；任一项是 hub ID 时维持现状（允许联网下载）。修复背景：模型经 modelscope 下载到本地目录时 HF 缓存为空，配 hub ID 会因连不上 HF endpoint 报 OSError。
 - **硬约束**：ForcedAligner 单次只支持短音频（qwen-asr 0.0.6 内部按 180s 自行再切块）。因此必须自写切块层：
   - 用 `ffmpeg silencedetect` 找静音边界（刻意不引入 silero-vad 等额外 torch 依赖）；
   - `chunk_plan(duration, silences, max_seconds)` 纯函数切块：优先在目标切点之前最接近目标的静音中点下刀，找不到静音时硬切并记 warning；
