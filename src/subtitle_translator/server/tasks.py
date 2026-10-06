@@ -30,6 +30,7 @@ from ..config import load_config
 from ..pipeline import (
     PIPELINE_STAGES,
     PipelineCancelledError,
+    default_srt_path,
     find_media_files,
     run_batch,
     run_pipeline,
@@ -71,7 +72,10 @@ class Task:
     cancel_requested: bool = False
 
     def snapshot(self) -> dict:
-        """列表 / 详情接口的序列化视图（progress 为最近一条事件快照）。"""
+        """列表 / 详情接口的序列化视图（progress 为最近一条事件快照）。
+
+        artifacts 为已存在的导出产物（SRT）路径列表，前端据此给下载链接。
+        """
         return {
             "id": self.id,
             "path": self.path,
@@ -80,7 +84,19 @@ class Task:
             "created_at": self.created_at,
             "error": self.error,
             "progress": self.events[-1] if self.events else None,
+            "artifacts": self._artifacts(),
         }
+
+    def _artifacts(self) -> list[str]:
+        result = []
+        for media in self.media:
+            try:
+                srt = default_srt_path(media)
+                if srt.is_file():
+                    result.append(str(srt))
+            except OSError:
+                continue
+        return result
 
 
 class TaskManager:

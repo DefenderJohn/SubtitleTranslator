@@ -62,6 +62,7 @@ def config_path(tmp_path) -> Path:
     cfg = Config()
     cfg.translate.model = "test-model"
     cfg.translate.additional_prompt = ""
+    cfg.ui.upload_dir = str(tmp_path / "uploads")
     path = tmp_path / "config.yaml"
     save_config(cfg, path)
     return path
@@ -396,8 +397,116 @@ class TestProjectEndpoints:
         assert resp.status_code == 200
         srt_path = Path(resp.json()["srt_path"])
         assert srt_path.name == "movie.srt"
+        assert resp.json()["download_url"].startswith("/api/download?path=")
         text = srt_path.read_text(encoding="utf-8")
         assert "你好世界。\nhello world." in text
+
+
+class TestUploadDownload:
+    """浏览器上传模式：multipart 流式上传 + 产物下载端点。"""
+
+    def _upload_root(self, config_path) -> Path:
+        return Path(yaml.safe_load(config_path.read_text(encoding="utf-8"))["ui"]["upload_dir"])
+
+    def test_upload_multipart(self, client, config_path):
+        resp = client.post(
+            "/api/upload",
+            files=[
+                ("files", ("clip one.mp4", b"fake-video-1")),
+                ("files", ("clip2.ogg", b"fake-audio-2")),
+            ],
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        batch = Path(body["batch"])
+        assert batch.parent == self._upload_root(config_path)
+        assert len(body["paths"]) == 2
+        for p, content in zip(body["paths"], (b"fake-video-1", b"fake-audio-2")):
+            path = Path(p)
+            assert path.parent == batch
+            assert path.read_bytes() == content
+
+    def test_upload_rejects_bad_extension(self, client, config_path):
+        resp = client.post("/api/upload", files=[("files", ("notes.txt", b"x"))])
+        assert resp.status_code == 400
+        # 混合批次整体拒绝，不落盘
+        resp = client.post(
+            "/api/upload",
+            files=[("files", ("ok.mp4", b"x")), ("files", ("bad.exe", b"x"))],
+        )
+        assert resp.status_code == 400
+        root = self._upload_root(config_path)
+        assert not root.exists() or not list(root.iterdir())
+
+    def test_upload_dedup_filename(self, client):
+        resp = client.post(
+            "/api/upload",
+            files=[("files", ("a.mp3", b"1")), ("files", ("a.mp3", b"2"))],
+        )
+        assert resp.status_code == 200
+        names = sorted(Path(p).name for p in resp.json()["paths"])
+        assert names == ["a.mp3", "a_2.mp3"]
+
+    def test_upload_path_traversal_sanitized(self, client, config_path):
+        """文件名带 ../ 只保留 basename，落盘在批次目录内。"""
+        resp = client.post("/api/upload", files=[("files", ("../../evil.mp3", b"x"))])
+        assert resp.status_code == 200
+        path = Path(resp.json()["paths"][0])
+        assert path.name == "evil.mp3"
+        assert path.parent.parent == self._upload_root(config_path)
+
+    def test_upload_empty_rejected(self, client):
+        resp = client.post("/api/upload", files=[])
+        assert resp.status_code in (400, 422)
+
+    def test_download(self, client, tmp_path, config_path):
+        srt = tmp_path / "movie.srt"
+        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\n你好\n", encoding="utf-8")
+        resp = client.get("/api/download", params={"path": str(srt)})
+        assert resp.status_code == 200
+        assert "attachment" in resp.headers["content-disposition"]
+        assert "你好" in resp.text
+
+        # 工程 JSON 也允许
+        project = tmp_path / "movie.sub.json"
+        project.write_text("{}", encoding="utf-8")
+        assert client.get("/api/download", params={"path": str(project)}).status_code == 200
+
+        # upload_dir 内的文件（原媒体）允许
+        media = self._upload_root(config_path) / "batch" / "clip.mp4"
+        media.parent.mkdir(parents=True)
+        media.write_bytes(b"video")
+        resp = client.get("/api/download", params={"path": str(media)})
+        assert resp.status_code == 200
+        assert resp.content == b"video"
+
+        # 其他文件拒绝；不存在 404
+        secret = tmp_path / "secret.py"
+        secret.write_text("x=1", encoding="utf-8")
+        assert client.get("/api/download", params={"path": str(secret)}).status_code == 403
+        assert client.get("/api/download", params={"path": str(tmp_path / "nope.srt")}).status_code == 404
+
+    def test_upload_to_task_end_to_end(self, client, config_path):
+        """上传 → 拿服务器路径建任务 → fake pipeline 跑完 → artifacts 带 SRT → 下载。"""
+        resp = client.post("/api/upload", files=[("files", ("talk.ogg", b"fake-audio"))])
+        assert resp.status_code == 200
+        media_path = resp.json()["paths"][0]
+
+        task_id = client.post(
+            "/api/tasks",
+            json={"path": media_path, "options": {"auto_confirm": True}},
+        ).json()["id"]
+        assert _wait_status(client, task_id, {"done"}) == "done"
+
+        # 产物落在上传批次目录（与原媒体同名同目录），快照带 artifacts
+        srt = Path(media_path).with_suffix(".srt")
+        assert srt.is_file()
+        detail = client.get(f"/api/tasks/{task_id}").json()
+        assert detail["artifacts"] == [str(srt)]
+
+        resp = client.get("/api/download", params={"path": str(srt)})
+        assert resp.status_code == 200
+        assert "-->" in resp.text
 
 
 class TestConfigEndpoints:

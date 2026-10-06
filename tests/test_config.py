@@ -6,9 +6,11 @@ from subtitle_translator.config import (
     AsrConfig,
     Config,
     TranslateConfig,
+    UiConfig,
     default_config,
     load_config,
     resolve_api_key,
+    resolve_upload_dir,
     save_config,
 )
 
@@ -78,6 +80,18 @@ def test_save_can_include_api_key_explicitly(tmp_path):
     path = tmp_path / "config.yaml"
     save_config(cfg, path, include_api_key=True)
     assert load_config(path).translate.api_key == "sk-secret"
+
+
+def test_resolve_upload_dir(tmp_path):
+    # 默认：~/.subtitle_translator/uploads（展开后是绝对路径）
+    default = resolve_upload_dir(Config())
+    assert default.is_absolute() and default.name == "uploads"
+    assert default.parent.name == ".subtitle_translator"
+    # 显式配置优先，支持 ~ 展开
+    configured = resolve_upload_dir(UiConfig(upload_dir=str(tmp_path / "up")))
+    assert configured == tmp_path / "up"
+    # 空白字符串等价于未配置
+    assert resolve_upload_dir(UiConfig(upload_dir="  ")).name == "uploads"
 
 
 def test_resolve_api_key_env_priority(monkeypatch):

@@ -8,6 +8,9 @@ HTTP 协议转换与路径 / 参数校验。任务调度见 :mod:`.tasks`。
   后打开的页面能恢复进度；
 - 视频流支持 HTTP Range（拖动进度条），单区间 bytes=start-end；
 - api_key 不明文返回（masked），PUT 时空字符串 / mask 值表示不修改；
+- 浏览器上传模式：POST /api/upload 流式写盘到 ui.upload_dir 的批次子目录，
+  返回服务器路径复用 POST /api/tasks；GET /api/download 下载 SRT 产物
+  （限 .srt/.sub.json 或 upload_dir 内文件）；
 - 前端构建产物 frontend/dist 存在时挂载到 /（SPA 路由回退 index.html），
   否则给占位提示页。
 """
@@ -16,12 +19,16 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import shutil
+import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, fields
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
+from urllib.parse import quote
 
-from fastapi import Body, FastAPI, Header, HTTPException
+from fastapi import Body, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -33,10 +40,12 @@ from ..config import (
     UiConfig,
     load_config,
     resolve_api_key,
+    resolve_upload_dir,
     save_config,
 )
 from ..models import SubtitleProject
 from ..pipeline import (
+    MEDIA_EXTENSIONS,
     PROJECT_SUFFIX,
     default_srt_path,
     find_media_files,
@@ -49,6 +58,12 @@ from .tasks import TERMINAL_STATES, TaskManager
 DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
 VIDEO_CHUNK_SIZE = 256 * 1024
+
+# 上传流式写盘的分块大小（视频可能几个 GB，不能整个读进内存）
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+# 下载端点允许的后缀（upload_dir 内的文件不受后缀限制）
+DOWNLOAD_SUFFIXES = (".srt", PROJECT_SUFFIX)
 
 _PLACEHOLDER_HTML = """<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>SubtitleTranslator</title></head>
@@ -149,6 +164,35 @@ def _is_dir_quiet(path: Path) -> bool:
         return path.is_dir()
     except OSError:
         return False
+
+
+def _safe_upload_name(filename: Optional[str]) -> str:
+    """上传文件名消毒：取 basename 防路径穿越，校验媒体扩展名。"""
+    name = Path((filename or "").replace("\\", "/")).name
+    if not name:
+        raise HTTPException(status_code=400, detail="上传文件缺少文件名")
+    if Path(name).suffix.lower().lstrip(".") not in MEDIA_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的媒体格式: {name}（支持: {', '.join(sorted(MEDIA_EXTENSIONS))}）",
+        )
+    return name
+
+
+def _dedup_target(batch_dir: Path, name: str, taken: set[str]) -> Path:
+    """文件名冲突（同批重名 / 与盘上已有文件撞名）时追加 _2/_3 后缀去重。"""
+    candidate = name
+    stem, suffix = Path(name).stem, Path(name).suffix
+    n = 2
+    while candidate in taken or (batch_dir / candidate).exists():
+        candidate = f"{stem}_{n}{suffix}"
+        n += 1
+    taken.add(candidate)
+    return batch_dir / candidate
+
+
+def _download_url(path: Union[str, Path]) -> str:
+    return f"/api/download?path={quote(str(path), safe='')}"
 
 
 def _config_payload(cfg: Config) -> dict:
@@ -354,6 +398,53 @@ def create_app(
             _iter_file_range(p, 0, size - 1), media_type=content_type, headers=headers
         )
 
+    # ---------------------------------------------------------- 上传与下载
+
+    @app.post("/api/upload")
+    async def upload_files(files: list[UploadFile] = File(...)):
+        """multipart 多文件上传：流式分块写盘，每次上传建独立批次子目录。
+
+        返回服务器侧路径，前端拿这些路径走 POST /api/tasks（复用任务机制）。
+        """
+        if not files:
+            raise HTTPException(status_code=400, detail="没有上传文件")
+        # 先校验全部文件名（basename 防穿越 + 扩展名白名单），再开始写盘
+        names = [_safe_upload_name(f.filename) for f in files]
+        root = resolve_upload_dir(load_config(config_path))
+        batch = root / f"{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+        batch.mkdir(parents=True)
+        saved: list[Path] = []
+        taken: set[str] = set()
+        try:
+            for upload, name in zip(files, names):
+                target = _dedup_target(batch, name, taken)
+                with target.open("wb") as out:
+                    while chunk := await upload.read(UPLOAD_CHUNK_SIZE):
+                        out.write(chunk)
+                saved.append(target)
+        except OSError as exc:
+            shutil.rmtree(batch, ignore_errors=True)
+            raise HTTPException(status_code=500, detail=f"上传写入失败: {exc}") from exc
+        return {"batch": str(batch), "paths": [str(p) for p in saved]}
+
+    @app.get("/api/download")
+    def download_file(path: str):
+        """下载产物文件（attachment）。
+
+        localhost 单用户工具，但不裸奔任意文件读：只允许 .srt / .sub.json
+        产物，或 upload_dir 内的文件（上传的原媒体/产物）。
+        """
+        p = Path(path).expanduser().resolve()
+        if not p.is_file():
+            raise HTTPException(status_code=404, detail=f"文件不存在: {p}")
+        upload_root = resolve_upload_dir(load_config(config_path)).resolve()
+        if not (p.name.endswith(DOWNLOAD_SUFFIXES) or p.is_relative_to(upload_root)):
+            raise HTTPException(
+                status_code=403,
+                detail=f"不允许下载该文件（仅支持 .srt / {PROJECT_SUFFIX} 或上传目录内文件）",
+            )
+        return FileResponse(p, filename=p.name, media_type="application/octet-stream")
+
     # ---------------------------------------------------------- 工程数据
 
     @app.get("/api/project")
@@ -408,7 +499,7 @@ def create_app(
         project, json_path = _load_project_or_404(req.path)
         srt_path = default_srt_path(json_path, from_json=True)
         export_srt(project, srt_path, bilingual=req.bilingual)
-        return {"srt_path": str(srt_path)}
+        return {"srt_path": str(srt_path), "download_url": _download_url(srt_path)}
 
     # ---------------------------------------------------------- 配置
 

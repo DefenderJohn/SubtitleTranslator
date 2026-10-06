@@ -57,6 +57,11 @@ class TranslateConfig:
 class UiConfig:
     host: str = "127.0.0.1"
     port: int = 7860
+    upload_dir: str = ""  # 网页上传存储目录，空=~/.subtitle_translator/uploads
+
+
+# upload_dir 为空时的默认上传存储目录
+DEFAULT_UPLOAD_DIR = Path("~/.subtitle_translator/uploads")
 
 
 @dataclass
@@ -64,6 +69,13 @@ class Config:
     asr: AsrConfig = field(default_factory=AsrConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+
+
+def resolve_upload_dir(cfg: Union[Config, UiConfig]) -> Path:
+    """解析上传存储目录：ui.upload_dir 为空时用默认值，支持 ~ 展开。"""
+    ui = cfg.ui if isinstance(cfg, Config) else cfg
+    raw = ui.upload_dir.strip()
+    return Path(raw).expanduser() if raw else DEFAULT_UPLOAD_DIR.expanduser()
 
 
 def _section_from_dict(cls: type, data: Any) -> Any:

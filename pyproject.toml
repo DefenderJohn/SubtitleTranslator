@@ -30,6 +30,7 @@ asr-vllm = [
 web = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
+    "python-multipart>=0.0.9",  # FastAPI 文件上传（/api/upload）依赖
 ]
 dev = [
     "pytest>=8.0",
