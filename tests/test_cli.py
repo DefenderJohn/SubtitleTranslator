@@ -248,7 +248,8 @@ class TestRun:
         """转录侧硬错误（模型路径不存在）同样在启动时拦下。"""
         monkeypatch.chdir(tmp_path)
         (tmp_path / "config.yaml").write_text(
-            "asr:\n  model: /nonexistent/asr-model\ntranslate:\n  model: m\n  api_key: k\n",
+            "asr:\n  model: /nonexistent/asr-model\n  aligner_model: /nonexistent/aligner\n"
+            "translate:\n  model: m\n  api_key: k\n",
             encoding="utf-8",
         )
         # 保留真实的模型检查，只 stub 其余环境相关检查

@@ -9,8 +9,10 @@
 - ffmpeg：:func:`media.find_ffmpeg` 探测，失败 = 硬错误（含安装指引）；
 - ASR / 对齐模型：本地路径要求目录存在且关键文件齐全（config.json、
   tokenizer_config.json、至少一个 .safetensors）；hub ID 查 HF 缓存，
-  未命中且 ``download_missing=True`` 时当场下载（尊重 HF_ENDPOINT，
-  失败给出 modelscope 备选指引），下载失败 = 硬错误；
+  未命中且 ``download_missing=True`` 时当场下载（尊重 HF_ENDPOINT）；
+  HF 下载失败自动走 modelscope 兜底（下载到 ``~/.subtitle_translator/models/<模型名>``
+  并把解析出的本地路径写回内存中的配置，本次进程生效；未安装 modelscope 或兜底
+  也失败 = 硬错误，含 pip install modelscope / HF_ENDPOINT 镜像 / 手动下载指引）；
 - 翻译端点（``need_translate=True`` 时）：model / base_url 未配置 = 硬错误；
   api_key 缺失 = 警告（本地端点不需要 key）；连通性测试发一条最小 chat
   请求（「你好」，max_tokens 极小，超时 15s），失败 = 硬错误。
@@ -52,6 +54,9 @@ ENDPOINT_TEST_MAX_TOKENS = 8
 ENDPOINT_TEST_PROMPT = "你好"
 RESPONSE_PREVIEW_CHARS = 50
 
+# modelscope 兜底下载的默认本地目录（HF 不可达时）：~/.subtitle_translator/models/<模型名>
+DEFAULT_MODELS_DIR = Path("~/.subtitle_translator/models")
+
 # hub ID 形如 "Qwen/Qwen3-ASR-1.7B"（恰好一段斜杠、两段合法字符）；
 # 含更多路径特征（开头 / ~ .、多于一段斜杠、反斜杠）的按本地路径处理
 _HUB_ID_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
@@ -62,11 +67,16 @@ ProgressCb = Callable[[dict], None]
 
 @dataclass
 class CheckResult:
-    """单项检查结果。message 在 ok 时通常是简短说明，warn/fail 时是排查指引。"""
+    """单项检查结果。message 在 ok 时通常是简短说明，warn/fail 时是排查指引。
+
+    ``resolved_path``：modelscope 兜底下载成功时解析出的本地模型目录，
+    由 :func:`check_asr_models` 写回内存中的配置（不落盘，仅本次进程生效）。
+    """
 
     name: str
     status: str
     message: str = ""
+    resolved_path: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {"name": self.name, "status": self.status, "message": self.message}
@@ -201,6 +211,58 @@ def _snapshot_download(model_id: str) -> str:
     return snapshot_download(model_id)
 
 
+def _modelscope_download(model_id: str, local_dir: Path) -> str:
+    """modelscope 兜底下载（HF 失败时）。单独成函数便于测试 mock。"""
+    try:
+        from modelscope import snapshot_download as ms_snapshot_download
+    except ImportError as exc:
+        raise RuntimeError("未安装 modelscope（请先 pip install modelscope）") from exc
+    local_dir.mkdir(parents=True, exist_ok=True)
+    return str(ms_snapshot_download(model_id, local_dir=str(local_dir)))
+
+
+def _download_via_modelscope(
+    label: str,
+    repo_id: str,
+    *,
+    hf_error: Exception,
+    progress_cb: Optional[ProgressCb],
+) -> CheckResult:
+    """HF 下载失败后的 modelscope 兜底：下到 ``~/.subtitle_translator/models/<模型名>``。
+
+    成功时把解析出的本地路径放进 ``CheckResult.resolved_path``（由
+    :func:`check_asr_models` 写回内存配置，本次进程直接走本地路径 + 离线模式）。
+    """
+    local_dir = DEFAULT_MODELS_DIR.expanduser() / repo_id.split("/")[-1]
+    if progress_cb is not None:
+        progress_cb({"check": label, "message": f"HF 下载失败，改用 modelscope 下载 {repo_id} …"})
+    logger.info("预检：HF 下载 %s 失败（%s），改试 modelscope -> %s", repo_id, hf_error, local_dir)
+    try:
+        path = _modelscope_download(repo_id, local_dir)
+    except Exception as ms_exc:  # noqa: BLE001 - 兜底失败统一转硬错误 + 手动指引
+        logger.warning("预检：modelscope 下载 %s 失败：%s", repo_id, ms_exc)
+        return CheckResult(
+            label,
+            STATUS_FAIL,
+            f"模型 {repo_id} 自动下载失败。\n"
+            f"HF 直连失败: {hf_error}\n"
+            f"modelscope 兜底失败: {ms_exc}\n"
+            "排查：① 未装 modelscope 请先 pip install modelscope；\n"
+            "② 给 HF 换镜像：设 HF_ENDPOINT=https://hf-mirror.com 后重试；\n"
+            f"③ 手动下载：modelscope download --model {repo_id} --local_dir <本地目录>，\n"
+            "然后把 config.yaml 中对应项改为该本地路径。",
+        )
+    logger.info("预检：modelscope 下载 %s 完成 -> %s", repo_id, path)
+    return CheckResult(
+        label,
+        STATUS_OK,
+        f"HF 不可达，已通过 modelscope 下载 {repo_id} -> {path}\n"
+        "本次运行将直接使用该本地路径；建议把 config.yaml 中对应项改为该路径，"
+        "下次启动走本地路径 + 离线模式，完全不联网。",
+        resolved_path=path,
+    )
+
+
 # ---------------------------------------------------------------------------
 # 各检查项
 # ---------------------------------------------------------------------------
@@ -267,17 +329,9 @@ def _check_one_model(
     logger.info("预检：HF 缓存未命中 %s，开始 snapshot_download", repo_id)
     try:
         path = _snapshot_download(repo_id)
-    except Exception as exc:  # noqa: BLE001 - 下载失败统一转硬错误 + 备选指引
-        logger.warning("预检：下载 %s 失败：%s", repo_id, exc)
-        return CheckResult(
-            label,
-            STATUS_FAIL,
-            f"模型 {repo_id} 自动下载失败: {exc}\n"
-            "排查：网络能否访问 HF endpoint（可用 HF_ENDPOINT 环境变量换镜像，\n"
-            "如 https://hf-mirror.com）；或改用 modelscope 手动下载：\n"
-            f"  modelscope download --model {repo_id} --local_dir <本地目录>\n"
-            "然后把 config.yaml 中对应项改为该本地路径。",
-        )
+    except Exception as exc:  # noqa: BLE001 - HF 失败自动转 modelscope 兜底
+        logger.warning("预检：HF 下载 %s 失败：%s", repo_id, exc)
+        return _download_via_modelscope(label, repo_id, hf_error=exc, progress_cb=progress_cb)
     logger.info("预检：%s 下载完成 -> %s", repo_id, path)
     return CheckResult(label, STATUS_OK, f"已下载 {repo_id} -> {path}")
 
@@ -288,17 +342,22 @@ def check_asr_models(
     download_missing: bool = True,
     progress_cb: Optional[ProgressCb] = None,
 ) -> list[CheckResult]:
-    """ASR 模型 + 对齐模型两项检查。"""
-    return [
-        _check_one_model(
-            "ASR 模型", cfg.asr.model,
+    """ASR 模型 + 对齐模型两项检查。
+
+    modelscope 兜底下载成功时把解析出的本地路径写回 ``cfg.asr``（仅内存，
+    不落盘），本次进程直接走本地路径 + 离线模式。
+    """
+    results = []
+    for label, attr in (("ASR 模型", "model"), ("对齐模型", "aligner_model")):
+        result = _check_one_model(
+            label, getattr(cfg.asr, attr),
             download_missing=download_missing, progress_cb=progress_cb,
-        ),
-        _check_one_model(
-            "对齐模型", cfg.asr.aligner_model,
-            download_missing=download_missing, progress_cb=progress_cb,
-        ),
-    ]
+        )
+        if result.resolved_path:
+            setattr(cfg.asr, attr, result.resolved_path)
+            logger.info("预检：%s 本次运行改用本地路径 %s", label, result.resolved_path)
+        results.append(result)
+    return results
 
 
 def test_translate_endpoint(

@@ -153,6 +153,7 @@ JSON schema：
 ## 7. 配置（config.py）
 
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
+- 查找规则：CLI / serve 默认读**当前工作目录**的 `config.yaml`（`--config` 可指定别的路径），文件不存在时静默用内置默认值——没有其他 fallback（不查 `~/.subtitle_translator/`、不查安装目录），改配置必须改到生效的那份上。
 - 分四节：`asr` / `translate` / `ui` / `log`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
 - 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）；`ui.host=127.0.0.1`、`ui.port=7860`、`ui.upload_dir=""`（空=`~/.subtitle_translator/uploads`，`resolve_upload_dir` 解析，支持 `~` 展开）；`log.level=INFO`（控制台级别，文件日志始终 DEBUG 起）、`log.dir=""`（空=`~/.subtitle_translator/logs`，`resolve_log_dir` 解析，支持 `~` 展开）。
@@ -253,7 +254,7 @@ JSON schema：
 - `run_preflight(cfg, *, need_translate=True, need_transcribe=True, download_missing=True, progress_cb=None) -> PreflightReport`：聚合全部检查项；`PreflightReport.checks` 每项为 `{name, status(ok/warn/fail), message}`，**有任一 fail 即整体不通过**（warn 不阻塞）。
 - 检查项与判定：
   - **ffmpeg**（硬错误）：`media.find_ffmpeg` 探测，失败信息含安装指引；
-  - **ASR / 对齐模型**（硬错误）：本地目录要求关键文件齐全（`config.json`、`tokenizer_config.json`、至少一个 `*.safetensors`，以 Qwen3-ASR-1.7B 实际结构为准）；hub ID 先查 HF 缓存快照（`~/.cache/huggingface/hub/models--*`，尊重 HF_HOME/HF_HUB_CACHE），未命中且 `download_missing=True` 时当场 `snapshot_download`（尊重 HF_ENDPOINT），下载失败给出 modelscope 备选指引。模型标识分类：已存在目录 → 本地路径；恰好 `org/name` 形态 → hub ID；其余按「缺失的本地路径」硬错；
+  - **ASR / 对齐模型**（硬错误）：本地目录要求关键文件齐全（`config.json`、`tokenizer_config.json`、至少一个 `*.safetensors`，以 Qwen3-ASR-1.7B 实际结构为准）；hub ID 先查 HF 缓存快照（`~/.cache/huggingface/hub/models--*`，尊重 HF_HOME/HF_HUB_CACHE），未命中且 `download_missing=True` 时当场 `snapshot_download`（尊重 HF_ENDPOINT）；**HF 下载失败自动走 modelscope 兜底**（`_download_via_modelscope`：Python API `modelscope.snapshot_download(local_dir=...)` 下载到 `~/.subtitle_translator/models/<模型名>`，成功时经 `CheckResult.resolved_path` 把本地路径写回内存中的 `cfg.asr`——不落盘，message 提示用户写进 config.yaml 持久化；未安装 modelscope 或兜底也失败 = 硬错误，含 pip install modelscope / HF_ENDPOINT 镜像 / 手动下载指引）。模型标识分类：已存在目录 → 本地路径；恰好 `org/name` 形态 → hub ID；其余按「缺失的本地路径」硬错；
   - **翻译端点**（`need_translate` 时）：model / base_url 未配置 = 硬错误；api_key 缺失 = 警告（本地端点不需要 key）；连通性测试 `test_translate_endpoint`（发一条最小 chat 请求「你好」，max_tokens=8，超时 15s，不重试）失败 = 硬错误含排查指引。该函数同时被 `POST /api/config/test` 复用；
   - **GPU**（警告）：`torch.cuda.is_available()`，无 GPU 可跑 CPU 只是慢。
 - 接线：`cli run` 在 pipeline 前执行（失败退出码 2；`--transcribe-only` 时 `need_translate=False`，`--from-json` 时 `need_transcribe=False`，`--skip-preflight` 逃生门）；`cli serve` 启动时执行但翻译端点检查降级为警告（serve 是长期进程，用户可能只转录或稍后配 key），且只做存在性检查与必要的模型下载，**模型加载仍留在首次任务时**（启动要快）；server TaskManager 每个任务执行前跑 `recheck_model_paths` 轻量复核（只查存在性，不下载不联网），防运行期间模型文件被删。

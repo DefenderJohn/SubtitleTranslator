@@ -88,7 +88,7 @@ subtitle-translator config init          # 生成 ./config.yaml（已存在则�
 subtitle-translator config init my.yaml  # 指定输出路径
 ```
 
-所有命令默认读当前目录的 `config.yaml`（`run`/`serve` 可用 `--config` 指定别的路径）；文件不存在时用内置默认值。
+所有命令默认只读**当前工作目录**的 `config.yaml`（`run`/`serve` 可用 `--config` 指定别的路径）；文件不存在时静默用内置默认值（模型为 hub ID `Qwen/...`，首次启动会联网下载）。注意查找逻辑**没有**其他 fallback（不会去找 `~/.subtitle_translator/` 或安装目录下的 config）——所以务必在你运行命令的目录下放 `config.yaml`，否则会出现「改了 A 目录的配置、实际生效的是内置默认值」的坑。config.yaml 含机器特定路径，不提交 git（仓库根目录的那份已被 .gitignore 忽略）。
 
 ### 3.2 asr 节（转录）
 
@@ -186,7 +186,7 @@ subtitle-translator run movie.mp4 --auto-confirm
 
 转录 → 摘要+术语表 → 逐句翻译 → 导出双语 SRT（`movie.srt`，译文在上）。进度打在 stderr。
 
-**启动时会发生什么（预检）**：`run` 在正式跑流水线前会先做一遍启动预检并在 stderr 打印报告——ffmpeg 是否可用、ASR/对齐模型文件是否齐全（填的是 hub ID 且 HF 缓存里没有时会**当场自动下载**，首次较慢）、GPU 是否可用（无 GPU 仅警告，CPU 也能跑只是慢）、翻译端点是否配好并连通（发一条「你好」实测，本地端点没配 api_key 只是警告）。任何一项**失败**都会直接退出（退出码 2）并给出排查指引——问题在启动时暴露，而不是跑到一半才炸。确认环境没问题时可用 `--skip-preflight` 跳过（不推荐）。`--transcribe-only` 不检查翻译端点，`--from-json` 不检查 ffmpeg/模型/GPU。
+**启动时会发生什么（预检）**：`run` 在正式跑流水线前会先做一遍启动预检并在 stderr 打印报告——ffmpeg 是否可用、ASR/对齐模型文件是否齐全（填的是 hub ID 且 HF 缓存里没有时会**当场自动下载**，首次较慢；HF 直连失败会自动改用 modelscope 兜底，下载到 `~/.subtitle_translator/models/<模型名>` 并在本次运行中直接改用该本地路径，同时提示你把路径写进 config.yaml）、GPU 是否可用（无 GPU 仅警告，CPU 也能跑只是慢）、翻译端点是否配好并连通（发一条「你好」实测，本地端点没配 api_key 只是警告）。任何一项**失败**都会直接退出（退出码 2）并给出排查指引——问题在启动时暴露，而不是跑到一半才炸。确认环境没问题时可用 `--skip-preflight` 跳过（不推荐）。`--transcribe-only` 不检查翻译端点，`--from-json` 不检查 ffmpeg/模型/GPU。
 
 `subtitle-translator serve` 启动时同样预检：ffmpeg/模型问题会阻止启动，但**翻译端点问题只打印警告**（服务是长期进程，可以只转录，或稍后再在设置页配 key）；预检只做存在性检查和必要的模型下载，模型加载仍发生在首个任务执行时，所以启动很快。
 
@@ -297,7 +297,7 @@ subtitle-translator serve --port 8000 --host 0.0.0.0   # 临时覆盖
 预检报告里 `[✗]` 行就是原因和排查指引，常见的有：
 - `ffmpeg`：见下方「ffmpeg 找不到」；
 - `模型路径不存在` / `缺少关键文件`：config 里 `asr.model` / `asr.aligner_model` 的路径拼写错误或模型没下载完整（需含 config.json、tokenizer_config.json 和 .safetensors 权重），重新下载或改回正确路径；
-- `HF 缓存中找不到 ... 自动下载失败`：填的是 hub ID 且连不上 HF endpoint。设 `HF_ENDPOINT=https://hf-mirror.com` 再试，或改用 modelscope 下载到本地目录后填本地路径；
+- `HF 缓存中找不到 ... 自动下载失败`：填的是 hub ID，HF 直连和 modelscope 兜底都失败了。报错里会同时列出两边的原因：未装 modelscope 先 `pip install modelscope`；或设 `HF_ENDPOINT=https://hf-mirror.com` 再试；或手动 `modelscope download --model <ID> --local_dir <本地目录>` 后把 config 改成该本地路径。只装了一个环境的依赖时注意：在哪个环境跑命令，modelscope 就要装在哪个环境；
 - `翻译端点连通性 失败`：见下方「翻译接口报错排查」；只转录的话加 `--transcribe-only` 就不会检查翻译端点。
 确认环境没问题、就是想跳过：`--skip-preflight`。
 

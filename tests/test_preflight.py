@@ -149,17 +149,69 @@ class TestHubCache:
         assert calls == ["Org/Model"]
         assert events and "下载" in events[0]["message"]
 
-    def test_download_failure_fails_with_guidance(self, tmp_path, monkeypatch):
+    def test_download_failure_falls_back_to_modelscope(self, tmp_path, monkeypatch):
+        """HF 下载失败 → 自动走 modelscope 兜底（此处 mock 兜底成功）。"""
         monkeypatch.setattr(preflight, "_hf_cache_dir", lambda: tmp_path / "hub")
 
         def boom(repo_id):
             raise RuntimeError("connection timeout")
 
         monkeypatch.setattr(preflight, "_snapshot_download", boom)
+        monkeypatch.setattr(
+            preflight, "_modelscope_download", lambda repo_id, local_dir: str(local_dir)
+        )
+        result = preflight._check_one_model("ASR 模型", "Org/Model", download_missing=True, progress_cb=None)
+        assert result.status == STATUS_OK
+        assert "modelscope" in result.message
+
+
+class TestModelscopeFallback:
+    """HF 失败后 modelscope 兜底的三分支：成功 / 未安装 / 下载失败。"""
+
+    @pytest.fixture
+    def hf_broken(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(preflight, "_hf_cache_dir", lambda: tmp_path / "hub")
+
+        def boom(repo_id):
+            raise RuntimeError("connection timeout")
+
+        monkeypatch.setattr(preflight, "_snapshot_download", boom)
+
+    def test_modelscope_success_resolves_local_path(self, hf_broken, tmp_path, monkeypatch):
+        target = tmp_path / "models" / "Model"
+        monkeypatch.setattr(
+            preflight, "_modelscope_download", lambda repo_id, local_dir: str(target)
+        )
+        cfg = Config()
+        cfg.asr.model = "Org/Model"
+        cfg.asr.aligner_model = str(_make_model_dir(tmp_path / "aligner"))
+        results = preflight.check_asr_models(cfg, download_missing=True)
+        assert results[0].status == STATUS_OK
+        assert results[0].resolved_path == str(target)
+        assert "config.yaml" in results[0].message  # 提示用户把本地路径写进 config
+        assert cfg.asr.model == str(target)  # 内存配置已改写，本次进程走本地路径
+
+    def test_modelscope_not_installed_fails_with_pip_hint(self, hf_broken, monkeypatch):
+        def not_installed(repo_id, local_dir):
+            raise RuntimeError("未安装 modelscope（请先 pip install modelscope）")
+
+        monkeypatch.setattr(preflight, "_modelscope_download", not_installed)
+        result = preflight._check_one_model("ASR 模型", "Org/Model", download_missing=True, progress_cb=None)
+        assert result.status == STATUS_FAIL
+        assert "connection timeout" in result.message  # 两个错误都呈现
+        assert "pip install modelscope" in result.message
+        assert "HF_ENDPOINT" in result.message
+
+    def test_modelscope_download_failure_fails(self, hf_broken, monkeypatch):
+        def boom(repo_id, local_dir):
+            raise RuntimeError("modelscope 网络错误")
+
+        monkeypatch.setattr(preflight, "_modelscope_download", boom)
         result = preflight._check_one_model("ASR 模型", "Org/Model", download_missing=True, progress_cb=None)
         assert result.status == STATUS_FAIL
         assert "connection timeout" in result.message
-        assert "HF_ENDPOINT" in result.message and "modelscope" in result.message
+        assert "modelscope 网络错误" in result.message
+        assert "modelscope download --model" in result.message  # 手动下载指引
 
 
 class TestFfmpegCheck:

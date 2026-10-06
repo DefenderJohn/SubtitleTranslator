@@ -1,4 +1,7 @@
 
+# 本机配置（含机器特定的模型绝对路径），不入库
+/config.yaml
+
 *.mp4
 *.srt
 *.sub.json
