@@ -21,7 +21,7 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。业务逻
 │     │                                                    │
 │     ▼                                                    │
 │   transcribe.py 转录（qwen-asr，vLLM / transformers）      │
-│     │  ffmpeg silencedetect 切块（ForcedAligner ≤5min）    │
+│     │  ffmpeg silencedetect 切块（对齐器输入上限）          │
 │     ▼                                                    │
 │   segment.py 分段（标点 / 停顿 / 时长字符上限）              │
 │     │                                                    │
@@ -82,8 +82,11 @@ subtitle-translator config init [path]
 - 使用官方 `qwen-asr` Python 包（`Qwen3ASRModel`）：
   - 转录模型：`Qwen/Qwen3-ASR-1.7B`
   - 对齐模型：`Qwen/Qwen3-ForcedAligner-0.6B`，产出词级时间戳（`return_time_stamps=True`）
-- 两个 backend：**vLLM 优先（`Qwen3ASRModel.LLM(...)`）、transformers 兜底（`.from_pretrained(...)`）**，做成配置项 `asr.backend`，对上层接口零差异（`AsrBackend` 抽象：`load()` / `transcribe_chunk(audio_path, language)` / `unload()`）。`qwen_asr` 在 `load()` 内延迟 import，未安装时模块仍可 import、`load()` 报清晰错误。
-- **硬约束**：ForcedAligner 单次只支持 ≤ 5 分钟音频。因此必须自写切块层：
+  - 结果对象 `ASRTranscription(language, text, time_stamps)`；`time_stamps` 为 `ForcedAlignResult`（可迭代），词元素字段 `text / start_time / end_time`（`_extract_result` 兼容 dict 形态与 start/end 别名）。
+  - `language` 参数只接受规范语言名（"English"/"Chinese" 等 30 种）；`_normalize_language` 把 ISO 代码（en/zh/ja...）映射为规范名，其余值透传由 qwen-asr 校验。
+  - `from_pretrained` 的 `dtype` 是 torch 对象（`_resolve_dtype` 把配置字符串转过去）；forced aligner 经 `forced_aligner_kwargs` 传 dtype/device_map。
+- 两个 backend：**vLLM 优先（`Qwen3ASRModel.LLM(...)`）、transformers 兜底（`.from_pretrained(...)`）**，做成配置项 `asr.backend`，对上层接口零差异（`AsrBackend` 抽象：`load()` / `transcribe_chunk(audio_path, language)` / `unload()`）。`qwen_asr` 在 `load()` 内延迟 import，未安装时模块仍可 import、`load()` 报清晰错误；vllm 缺失时报错指向 `asr-vllm` extra。
+- **硬约束**：ForcedAligner 单次只支持短音频（qwen-asr 0.0.6 内部按 180s 自行再切块）。因此必须自写切块层：
   - 用 `ffmpeg silencedetect` 找静音边界（刻意不引入 silero-vad 等额外 torch 依赖）；
   - `chunk_plan(duration, silences, max_seconds)` 纯函数切块：优先在目标切点之前最接近目标的静音中点下刀，找不到静音时硬切并记 warning；
   - `transcribe_media(path, cfg, backend=None, progress_cb=None)`：probe → 切块 → 逐块抽 16kHz 单声道 wav 转录 → 词级时间戳加块偏移量拼接 → 直接流水线调用分段器产出 cues（`stage=transcribed`）。
@@ -150,7 +153,7 @@ JSON schema：
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
 - 分三节：`asr` / `translate` / `ui`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（ForcedAligner ≤5min 留余量）、`asr.language=null`（源语言，null=自动检测）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）。
+- 默认值：`asr.backend=vllm`（可选 `transformers`）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）。
 
 ## 8. 网页（server/ + frontend/）
 
@@ -219,5 +222,5 @@ JSON schema：
 ## 10. 依赖策略
 
 - 核心依赖尽量轻（当前只有 pyyaml + openai）。
-- `torch` / `vllm` / `qwen-asr` / `transformers` 列为 optional extra（`asr`），FastAPI 等为 `web` extra，按环境单独安装。
+- `torch` / `qwen-asr` / `transformers` 列为 optional extra（`asr`），`vllm` 单列 `asr-vllm` extra（依赖 `asr`；新版 vLLM 对 Turing sm_75 等老架构支持不佳，老卡用 transformers backend），FastAPI 等为 `web` extra，按环境单独安装。
 - 依赖版本只钉下界，不钉死。

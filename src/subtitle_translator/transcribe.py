@@ -6,9 +6,9 @@
 - 两个 backend：VllmBackend 优先、TransformersBackend 兜底，配置项
   ``asr.backend`` 切换，对上层接口零差异。qwen_asr 在 load() 内部延迟
   import，未安装时本模块仍可正常 import，load() 报清晰错误。
-- 硬约束：ForcedAligner 单次只支持 ≤5 分钟音频。chunk_plan 基于 ffmpeg
-  silencedetect 的静音边界切块（不引入 silero-vad 等额外 torch 依赖），
-  transcribe_media 逐块抽音频转录后偏移时间戳拼接。
+- 硬约束：ForcedAligner 单次只支持短音频（qwen-asr 内部还会按 180s 再切块）。
+  chunk_plan 基于 ffmpeg silencedetect 的静音边界切块（不引入 silero-vad
+  等额外 torch 依赖），transcribe_media 逐块抽音频转录后偏移时间戳拼接。
 - 分段策略：转录完成后直接流水线调用 segment.segment_words 生成 cues，
   词级时间戳保留在每个 cue 的 words 字段里（不存顶层 raw_words 冗余字段；
   展平所有 cue 的 words 即可恢复完整词序列）。

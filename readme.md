@@ -21,7 +21,9 @@ pip install -e .[dev]     # 含 pytest
 python -m pytest
 ```
 
-重依赖按环境单独安装：`pip install -e .[asr]`（qwen-asr / torch / vllm / transformers）、`pip install -e .[web]`（FastAPI / uvicorn）。ffmpeg 为硬依赖，需系统级安装。
+重依赖按环境单独安装：转录层 `pip install -e ".[asr]"`（qwen-asr / torch / transformers，transformers backend 开箱即用），更快的 vLLM backend 另装 `pip install -e ".[asr-vllm]"`（注意：新版 vLLM 对 Turing sm_75 等老显卡支持不佳，老卡用 transformers 即可），网页服务 `pip install -e ".[web]"`（FastAPI / uvicorn）。ffmpeg 为硬依赖，`pip install imageio-ffmpeg` 可提供静态二进制。
+
+实测建议（2026-10，RTX 2080 Ti 22GB）：为转录单独建 Python 3.12 环境（`conda create -n subtr python=3.12 -y`），在其中 `pip install -e ".[asr,web,dev]"` + `pip install imageio-ffmpeg`；模型权重经 modelscope 下载到本地目录后，config.yaml 的 `asr.model` / `asr.aligner_model` 直接填本地路径。详见 [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md)。
 
 ## 命令行使用
 
