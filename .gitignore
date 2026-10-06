@@ -1,6 +1,7 @@
 
 *.mp4
 *.srt
+*.sub.json
 __pycache__/
 *.egg-info/
 *.egg-link
