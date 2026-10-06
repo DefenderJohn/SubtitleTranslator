@@ -132,6 +132,25 @@ def _mask_api_key(key: Optional[str]) -> Optional[str]:
     return key[:3] + "...***" if len(key) > 3 else "***"
 
 
+def _default_browse_root() -> Path:
+    """目录浏览默认起点：用户主目录，不可用（无法解析/不可读）时退回进程工作目录。"""
+    try:
+        home = Path.home()
+        if home.is_dir():
+            return home
+    except (RuntimeError, OSError):
+        pass
+    return Path.cwd()
+
+
+def _is_dir_quiet(path: Path) -> bool:
+    """is_dir 的容错版：stat 失败（无权限、悬挂链接等）按非目录处理。"""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _config_payload(cfg: Config) -> dict:
     data = {"asr": asdict(cfg.asr), "translate": asdict(cfg.translate), "ui": asdict(cfg.ui)}
     data["translate"]["api_key"] = _mask_api_key(cfg.translate.api_key)
@@ -281,8 +300,8 @@ def create_app(
     # ---------------------------------------------------------- 媒体
 
     @app.get("/api/media")
-    def browse_media(path: str):
-        p = Path(path)
+    def browse_media(path: str = ""):
+        p = Path(path) if path else _default_browse_root()
         if not p.exists():
             raise HTTPException(status_code=404, detail=f"路径不存在: {p}")
         try:
@@ -291,7 +310,12 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         directories = []
         if p.is_dir():
-            directories = sorted(d.name for d in p.iterdir() if d.is_dir())
+            # 单个子目录无权限（/root、挂载点残留等）跳过；目录本身不可读则返回空清单
+            try:
+                children = list(p.iterdir())
+            except OSError:
+                children = []
+            directories = sorted(d.name for d in children if _is_dir_quiet(d))
         return {
             "path": str(p),
             "parent": str(p.parent) if p.parent != p else None,

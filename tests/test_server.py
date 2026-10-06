@@ -452,6 +452,48 @@ class TestMediaAndVideo:
         assert set(Path(m).name for m in body["media"]) == {"a.mp4", "b.wav"}
         assert client.get("/api/media", params={"path": str(tmp_path / "nope")}).status_code == 404
 
+    def test_browse_media_default_path(self, client):
+        """path 省略/为空时后端给默认起点（用户主目录），不应报错。"""
+        for params in ({}, {"path": ""}):
+            resp = client.get("/api/media", params=params)
+            assert resp.status_code == 200
+            body = resp.json()
+            assert Path(body["path"]).is_dir()
+            assert isinstance(body["directories"], list)
+            assert isinstance(body["media"], list)
+
+    def test_browse_media_unreadable_dir(self, client, tmp_path, monkeypatch):
+        """被浏览的目录本身不可读时容错：返回 200 + 空子目录清单，不 500。"""
+        (tmp_path / "a.mp4").touch()
+
+        def fake_iterdir(self):
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "iterdir", fake_iterdir)
+        resp = client.get("/api/media", params={"path": str(tmp_path)})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["directories"] == []
+        assert [Path(m).name for m in body["media"]] == ["a.mp4"]
+
+    def test_browse_media_unreadable_child(self, client, tmp_path, monkeypatch):
+        """单个子目录 stat 失败时跳过，其余子目录正常列出。"""
+        (tmp_path / "ok").mkdir()
+        bad = tmp_path / "secret"
+        bad.mkdir()
+
+        real_is_dir = Path.is_dir
+
+        def fake_is_dir(self):
+            if self == bad:
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_is_dir(self)
+
+        monkeypatch.setattr(Path, "is_dir", fake_is_dir)
+        resp = client.get("/api/media", params={"path": str(tmp_path)})
+        assert resp.status_code == 200
+        assert resp.json()["directories"] == ["ok"]
+
     def test_video_full_and_range(self, client, tmp_path):
         video = tmp_path / "clip.mp4"
         video.write_bytes(bytes(range(256)) * 4)  # 1024 字节

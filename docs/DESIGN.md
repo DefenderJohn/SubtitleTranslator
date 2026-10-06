@@ -193,7 +193,7 @@ JSON schema：
 | GET | `/api/tasks/{id}/events` | SSE 订阅（历史回放 + 实时推送，终态关流） |
 | POST | `/api/tasks/{id}/cancel` | 取消（协作式）；终态返回 409 |
 | POST | `/api/tasks/{id}/resume` | waiting_confirm 任务重新排队继续；其他状态 409 |
-| GET | `/api/media?path=` | 浏览目录：返回子目录名 + 递归媒体文件清单（复用 find_media_files） |
+| GET | `/api/media?path=` | 浏览目录：返回子目录名 + 递归媒体文件清单（复用 find_media_files）；path 省略/为空时默认用户主目录；遍历中无权限/不可读的条目跳过，不因权限问题 500 |
 | GET | `/api/video?path=` | 视频流，支持单区间 Range（bytes=start-end / start- / -suffix），206 + Content-Range，非法区间 416 |
 
 工程数据（JSON 是唯一事实来源，直接读写 `.sub.json`；path 参数传 `.sub.json` 或对应媒体文件路径均可）：

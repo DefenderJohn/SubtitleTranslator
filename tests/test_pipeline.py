@@ -116,6 +116,23 @@ class TestFindMediaFiles:
         with pytest.raises(FileNotFoundError):
             find_media_files(tmp_path / "nope")
 
+    def test_unreadable_entries_skipped(self, tmp_path, monkeypatch):
+        """遍历中遇到无权限/不可读的条目（stat 失败）跳过继续，不抛异常。"""
+        (tmp_path / "good.mp4").touch()
+        bad = tmp_path / "secret"
+        bad.mkdir()
+        (bad / "hidden.mp4").touch()
+
+        real_is_file = Path.is_file
+
+        def fake_is_file(self):
+            if str(self).startswith(str(bad)):
+                raise PermissionError(13, "Permission denied", str(self))
+            return real_is_file(self)
+
+        monkeypatch.setattr(Path, "is_file", fake_is_file)
+        assert find_media_files(tmp_path) == [tmp_path / "good.mp4"]
+
 
 class TestPaths:
     def test_project_json_path(self, tmp_path):

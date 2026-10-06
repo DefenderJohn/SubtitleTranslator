@@ -107,6 +107,7 @@ def find_media_files(path: Union[str, Path]) -> list[Path]:
 
     - path 是文件：校验扩展名后直接使用（不合法抛 ValueError）；
     - path 是目录：递归查找全部媒体文件，按路径排序；
+      遍历中遇到无权限/不可读的条目（如 /root、挂载点残留）跳过继续；
     - path 不存在抛 FileNotFoundError。
     """
     path = Path(path)
@@ -119,11 +120,14 @@ def find_media_files(path: Union[str, Path]) -> list[Path]:
                 f"（支持: {', '.join(sorted(MEDIA_EXTENSIONS))}）"
             )
         return [path]
-    return sorted(
-        p
-        for p in path.rglob("*")
-        if p.is_file() and p.suffix.lower().lstrip(".") in MEDIA_EXTENSIONS
-    )
+    found = []
+    for p in path.rglob("*"):
+        try:
+            if p.is_file() and p.suffix.lower().lstrip(".") in MEDIA_EXTENSIONS:
+                found.append(p)
+        except OSError:
+            continue
+    return sorted(found)
 
 
 def run_pipeline(
