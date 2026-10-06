@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from ..config import load_config, resolve_api_key, resolve_log_dir
+from .. import preflight
 from ..logsetup import (
     TASK_LOG_DIR_NAME,
     create_task_log_handler,
@@ -320,6 +321,11 @@ class TaskManager:
         cfg = load_config(self.config_path)
         # 本次任务的 api_key 注册进脱敏过滤器（配置可能刚在网页改过）
         register_secret(resolve_api_key(cfg))
+        # 轻量复核：模型路径 / ffmpeg 仍存在（防 serve 启动后运行期间文件被删），
+        # 只查存在性，不下载不联网
+        problems = preflight.recheck_model_paths(cfg)
+        if problems:
+            raise RuntimeError("任务启动前复核未通过：\n" + "\n".join(problems))
         options = task.options
         if options.get("language"):
             cfg.asr.language = options["language"]

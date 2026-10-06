@@ -186,6 +186,10 @@ subtitle-translator run movie.mp4 --auto-confirm
 
 转录 → 摘要+术语表 → 逐句翻译 → 导出双语 SRT（`movie.srt`，译文在上）。进度打在 stderr。
 
+**启动时会发生什么（预检）**：`run` 在正式跑流水线前会先做一遍启动预检并在 stderr 打印报告——ffmpeg 是否可用、ASR/对齐模型文件是否齐全（填的是 hub ID 且 HF 缓存里没有时会**当场自动下载**，首次较慢）、GPU 是否可用（无 GPU 仅警告，CPU 也能跑只是慢）、翻译端点是否配好并连通（发一条「你好」实测，本地端点没配 api_key 只是警告）。任何一项**失败**都会直接退出（退出码 2）并给出排查指引——问题在启动时暴露，而不是跑到一半才炸。确认环境没问题时可用 `--skip-preflight` 跳过（不推荐）。`--transcribe-only` 不检查翻译端点，`--from-json` 不检查 ffmpeg/模型/GPU。
+
+`subtitle-translator serve` 启动时同样预检：ffmpeg/模型问题会阻止启动，但**翻译端点问题只打印警告**（服务是长期进程，可以只转录，或稍后再在设置页配 key）；预检只做存在性检查和必要的模型下载，模型加载仍发生在首个任务执行时，所以启动很快。
+
 `run` 的路径可以是：
 
 - **单个媒体文件**：支持 flac/m4a/mp3/mp4/mpeg/mpga/oga/ogg/wav/webm/mkv/mov/avi/m4v；
@@ -284,6 +288,14 @@ subtitle-translator serve --port 8000 --host 0.0.0.0   # 临时覆盖
 字幕行的 `flags` 标记含义：`translation_failed`（重试后仍失败，保留原文占位）、`glossary_miss:<术语>`（原文含该术语但译文没用对应译法）。
 
 ## 7. 常见问题
+
+**`run` 一启动就报「预检未通过」（退出码 2）**
+预检报告里 `[✗]` 行就是原因和排查指引，常见的有：
+- `ffmpeg`：见下方「ffmpeg 找不到」；
+- `模型路径不存在` / `缺少关键文件`：config 里 `asr.model` / `asr.aligner_model` 的路径拼写错误或模型没下载完整（需含 config.json、tokenizer_config.json 和 .safetensors 权重），重新下载或改回正确路径；
+- `HF 缓存中找不到 ... 自动下载失败`：填的是 hub ID 且连不上 HF endpoint。设 `HF_ENDPOINT=https://hf-mirror.com` 再试，或改用 modelscope 下载到本地目录后填本地路径；
+- `翻译端点连通性 失败`：见下方「翻译接口报错排查」；只转录的话加 `--transcribe-only` 就不会检查翻译端点。
+确认环境没问题、就是想跳过：`--skip-preflight`。
 
 **显存不够 / OOM**
 换小模型：`asr.model` 改成 `Qwen/Qwen3-ASR-0.6B`（对齐器本来就是 0.6B）。同时确认 `dtype: float16`、没有重复加载模型的其他进程占显存。

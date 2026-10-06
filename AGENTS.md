@@ -22,6 +22,8 @@ SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 
 │   │                           #   glossary.py strategy.py(ABC+SlidingWindow)
 │   ├── pipeline.py             # 流水线编排 + 断点续传（stage 驱动）+ run_batch 批量；
 │   │                           #   进度回调协议 progress_cb({media,stage,done,total,message})
+│   ├── preflight.py            # 启动预检：ffmpeg/模型文件/翻译端点连通性/GPU，
+│   │                           #   PreflightReport({name,status,message})，fail 即整体失败
 │   ├── srt.py                  # SRT / 双语 SRT 导出
 │   ├── cli.py                  # CLI 薄壳（argparse：run / export / glossary / serve / config init）
 │   └── server/                 # FastAPI 薄壳（REST + SSE + Range 视频流）
@@ -43,6 +45,7 @@ SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 
 - **文档同步**：代码行为变化时同步更新 docs/DESIGN.md（以及本文件的结构说明）。
 - **依赖**：核心保持轻量（pyyaml + openai）；torch / vllm / qwen-asr 等只放 optional extras，版本只钉下界。
 - **进度回调协议**：`progress_cb({"media", "stage", "done", "total", "message"})`（pipeline 层统一定义，网页 SSE 直接复用；transcribe / translate 内层的 `(done, total)` 回调由 pipeline 包装成该协议）。
+- **启动预检**：设计原则「运行时炸不如启动时炸——能进入服务即应 ready-to-use」。**新的外部依赖（二进制、模型、服务端点等）检查一律进 `preflight.py`**，不要在业务代码里各自探测；`run`/`serve` 启动执行预检（失败退出码 2，serve 的翻译端点检查降级为警告），server 任务执行前跑 `recheck_model_paths` 轻量复核。
 - **协作式取消**：`progress_cb` 抛 `pipeline.PipelineCancelledError` 即取消（当前 cue/块完成后停，translate 阶段会先落盘已翻译 cue）；网页层在回调里检查任务取消标志。
 - **server 层**：fastapi/uvicorn/httpx 在 `web`/`dev` extras，延迟导入保持 core 可独立用；业务逻辑不写在 server（薄壳，只协议转换）；SSE 事件 = pipeline 五键 + task_id + status。
 - **日志**：诊断信息一律走 `logging`（模块级 `logger = logging.getLogger(__name__)`），不走 print；CLI 面向用户的输出（进度/结果/报错）才用 print。入口（cli main / server create_app）统一调 `logsetup.setup_logging`；日志经 `SanitizeFilter` 脱敏（api key、Bearer、URL query key/token、主目录路径→`~`），新增密钥类信息必须确认会被过滤器覆盖。

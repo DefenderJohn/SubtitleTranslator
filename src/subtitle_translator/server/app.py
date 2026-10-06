@@ -54,6 +54,7 @@ from ..config import (
 )
 from ..logsetup import register_secret, setup_logging
 from ..models import SubtitleProject
+from .. import preflight
 from ..pipeline import (
     MEDIA_EXTENSIONS,
     PROJECT_SUFFIX,
@@ -675,6 +676,50 @@ def create_app(
         # 文件里已有 / 新设了明文 key 时保留之，其余情况不落盘明文
         save_config(cfg, config_path, include_api_key=bool(cfg.translate.api_key))
         return _config_payload(cfg)
+
+    def _translate_from_payload(payload: Optional[dict]) -> TranslateConfig:
+        """构造待测的 translate 配置：body 携带未保存的表单值时覆盖磁盘配置。
+
+        api_key 传空字符串 / mask 值表示沿用磁盘配置（与 PUT /api/config 同语义）。
+        """
+        translate = load_config(config_path).translate
+        values = (payload or {}).get("translate")
+        if values is None:
+            return translate
+        if not isinstance(values, dict):
+            raise HTTPException(status_code=400, detail="translate 节必须是对象")
+        known = {f.name for f in fields(TranslateConfig)}
+        unknown_fields = set(values) - known
+        if unknown_fields:
+            raise HTTPException(
+                status_code=400, detail=f"translate 节未知字段: {sorted(unknown_fields)}"
+            )
+        data = asdict(translate)
+        masked_key = _mask_api_key(translate.api_key)
+        for key, value in values.items():
+            if key == "api_key" and value in ("", None, masked_key):
+                continue
+            data[key] = value
+        try:
+            return TranslateConfig(**data)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=f"translate 节配置非法: {exc}") from exc
+
+    @app.post("/api/config/test")
+    def test_translate_endpoint(payload: Optional[dict] = Body(None)):
+        """翻译端点连通性测试（设置页「测试连接」按钮用）：发一条最小 chat 请求。
+
+        body 可选携带未保存的表单配置（{"translate": {...}}）；不带则用磁盘上的
+        config。返回 {ok, latency_ms, response_preview（前 50 字符）, error}。
+        """
+        translate = _translate_from_payload(payload)
+        return preflight.test_translate_endpoint(translate).to_dict()
+
+    @app.post("/api/preflight")
+    def run_full_preflight():
+        """手动触发完整预检（前端「系统检查」入口预留），返回 PreflightReport。"""
+        report = preflight.run_preflight(load_config(config_path), need_translate=True)
+        return report.to_dict()
 
     # ---------------------------------------------------------- 前端静态托管（最后注册，避免挡住 /api）
 

@@ -34,6 +34,7 @@ core 纯 Python 库 + 两个薄壳（CLI、FastAPI + React 网页）。业务逻
 │                                                          │
 │   models.py 数据结构与 JSON schema（唯一事实来源）           │
 │   config.py  单份 config.yaml                             │
+│   preflight.py 启动预检（进入服务即 ready-to-use，见 §11）    │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -73,7 +74,7 @@ subtitle-translator config init [path]
 ```
 
 - `run` 的路径是目录时自动走 `run_batch`；CLI 参数覆盖 yaml（如 `--language` 覆盖 `asr.language`）。
-- 配置体检：跑翻译前校验 `translate.model`（缺失时报错并给出 config init 指引）；`resolve_api_key` 为 None 时 stderr 警告并给出 `api_key_env` 配置指引（本地端点可忽略）。
+- **启动预检**：跑 pipeline 前执行 preflight（见 §11），失败退出码 2 并打印报告；`--skip-preflight` 为逃生门（不推荐）。`--transcribe-only` 时不查翻译端点，`--from-json` 时不查 ffmpeg/模型/GPU。
 - 检查点失败时 stderr 打印后续操作指引（glossary --show / --confirm-all / --auto-confirm）。
 - 进度在 stderr 简单打印（不引 tqdm，网页才是主交互）。
 
@@ -218,6 +219,8 @@ JSON schema：
 | --- | --- | --- |
 | GET | `/api/config` | 读 config.yaml；**api_key 不明文返回**（masked，如 `sk-...***`），另返回 `api_key_resolved` 表示密钥是否已可用（可能来自 api_key_env） |
 | PUT | `/api/config` | 局部更新（按节给 dict，未知节/字段 400，改后重建配置节触发校验）；api_key 传空字符串或 mask 值表示不修改；文件里已有/新设明文 key 时保留，否则不落盘明文 |
+| POST | `/api/config/test` | 翻译端点连通性测试（设置页「测试连接」用）：body 可选携带未保存的表单配置（`{"translate": {...}}`，api_key 空/mask = 沿用磁盘），不带则用磁盘 config；发「你好」最小请求，返回 `{ok, latency_ms, response_preview(前 50 字符), error}` |
+| POST | `/api/preflight` | 手动触发完整启动预检（§11），返回 PreflightReport `{ok, checks[]}`（前端「系统检查」入口预留） |
 
 启动：`subtitle-translator serve [--config path] [--host] [--port]`（host/port 默认取 ui 节配置）。
 
@@ -242,3 +245,16 @@ JSON schema：
 - 核心依赖尽量轻（当前只有 pyyaml + openai）。
 - `torch` / `qwen-asr` / `transformers` 列为 optional extra（`asr`），`vllm` 单列 `asr-vllm` extra（依赖 `asr`；新版 vLLM 对 Turing sm_75 等老架构支持不佳，老卡用 transformers backend），FastAPI 等为 `web` extra，按环境单独安装。
 - 依赖版本只钉下界，不钉死。
+
+## 11. 启动预检（preflight.py）
+
+**设计原则：运行时炸不如启动时炸——只要能进入服务，就应该是 ready-to-use 的。** ffmpeg 缺失、模型文件不齐、翻译端点连不通这类问题，必须在 `run` / `serve` 启动时以清晰报错暴露，而不是转录/翻译跑到一半才炸。
+
+- `run_preflight(cfg, *, need_translate=True, need_transcribe=True, download_missing=True, progress_cb=None) -> PreflightReport`：聚合全部检查项；`PreflightReport.checks` 每项为 `{name, status(ok/warn/fail), message}`，**有任一 fail 即整体不通过**（warn 不阻塞）。
+- 检查项与判定：
+  - **ffmpeg**（硬错误）：`media.find_ffmpeg` 探测，失败信息含安装指引；
+  - **ASR / 对齐模型**（硬错误）：本地目录要求关键文件齐全（`config.json`、`tokenizer_config.json`、至少一个 `*.safetensors`，以 Qwen3-ASR-1.7B 实际结构为准）；hub ID 先查 HF 缓存快照（`~/.cache/huggingface/hub/models--*`，尊重 HF_HOME/HF_HUB_CACHE），未命中且 `download_missing=True` 时当场 `snapshot_download`（尊重 HF_ENDPOINT），下载失败给出 modelscope 备选指引。模型标识分类：已存在目录 → 本地路径；恰好 `org/name` 形态 → hub ID；其余按「缺失的本地路径」硬错；
+  - **翻译端点**（`need_translate` 时）：model / base_url 未配置 = 硬错误；api_key 缺失 = 警告（本地端点不需要 key）；连通性测试 `test_translate_endpoint`（发一条最小 chat 请求「你好」，max_tokens=8，超时 15s，不重试）失败 = 硬错误含排查指引。该函数同时被 `POST /api/config/test` 复用；
+  - **GPU**（警告）：`torch.cuda.is_available()`，无 GPU 可跑 CPU 只是慢。
+- 接线：`cli run` 在 pipeline 前执行（失败退出码 2；`--transcribe-only` 时 `need_translate=False`，`--from-json` 时 `need_transcribe=False`，`--skip-preflight` 逃生门）；`cli serve` 启动时执行但翻译端点检查降级为警告（serve 是长期进程，用户可能只转录或稍后配 key），且只做存在性检查与必要的模型下载，**模型加载仍留在首次任务时**（启动要快）；server TaskManager 每个任务执行前跑 `recheck_model_paths` 轻量复核（只查存在性，不下载不联网），防运行期间模型文件被删。
+- 日志走 logging（脱敏过滤器覆盖），CLI 另以 `format_text()` 打印人可读报告。

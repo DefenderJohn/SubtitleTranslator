@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from subtitle_translator import logsetup, pipeline, transcribe
+from subtitle_translator import logsetup, pipeline, preflight, transcribe
 from subtitle_translator.config import Config, save_config
 from subtitle_translator.logsetup import (
     SanitizeFilter,
@@ -230,6 +230,7 @@ class TestTaskLogApi:
             return pipeline.run_pipeline(media_path, cfg, **kwargs)
 
         monkeypatch.setattr(server_tasks, "run_pipeline", _run)
+        monkeypatch.setattr(preflight, "recheck_model_paths", lambda cfg: [])
 
         media = tmp_path / "a.mp4"
         media.write_bytes(b"x")
@@ -255,6 +256,7 @@ class TestTaskLogApi:
             raise RuntimeError("模拟流水线崩溃")
 
         monkeypatch.setattr(server_tasks, "run_pipeline", _boom)
+        monkeypatch.setattr(preflight, "recheck_model_paths", lambda cfg: [])
         media = tmp_path / "b.mp4"
         media.write_bytes(b"x")
         with TestClient(create_app(config_path=config_path)) as client:
@@ -276,6 +278,7 @@ class TestTaskLogApi:
             raise RuntimeError("不用真跑完")
 
         monkeypatch.setattr(server_tasks, "run_pipeline", _slow)
+        monkeypatch.setattr(preflight, "recheck_model_paths", lambda cfg: [])
         media = tmp_path / "c.mp4"
         media.write_bytes(b"x")
         with TestClient(create_app(config_path=config_path)) as client:

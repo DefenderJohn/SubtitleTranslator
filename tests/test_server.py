@@ -18,7 +18,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from subtitle_translator import pipeline, transcribe
+from subtitle_translator import pipeline, preflight, transcribe
 from subtitle_translator.config import save_config, Config
 from subtitle_translator.models import Cue, GlossaryEntry, Stage, SubtitleProject
 from subtitle_translator.pipeline import PROJECT_SUFFIX, BatchResult, find_media_files
@@ -102,6 +102,8 @@ def fake_pipeline(monkeypatch, mocked_media):
 
     monkeypatch.setattr(server_tasks, "run_pipeline", _run)
     monkeypatch.setattr(server_tasks, "run_batch", _batch)
+    # 任务执行前的模型路径复核走真实现（会碰 HF 缓存），测试里 stub 成通过
+    monkeypatch.setattr(preflight, "recheck_model_paths", lambda cfg: [])
 
 
 @pytest.fixture
@@ -249,6 +251,7 @@ class TestCancel:
                 time.sleep(0.02)
 
         monkeypatch.setattr(server_tasks, "run_pipeline", slow_run)
+        monkeypatch.setattr(preflight, "recheck_model_paths", lambda cfg: [])
         with TestClient(create_app(config_path=config_path)) as client:
             media = tmp_path / "movie.mp4"
             media.touch()
@@ -272,6 +275,7 @@ class TestCancel:
             gate.wait(timeout=10)
 
         monkeypatch.setattr(server_tasks, "run_pipeline", blocking_run)
+        monkeypatch.setattr(preflight, "recheck_model_paths", lambda cfg: [])
         with TestClient(create_app(config_path=config_path)) as client:
             media = tmp_path / "movie.mp4"
             media.touch()
@@ -600,6 +604,94 @@ class TestConfigEndpoints:
         assert client.put("/api/config", json={"bogus": {}}).status_code == 400
         assert client.put("/api/config", json={"asr": {"nope": 1}}).status_code == 400
         assert client.put("/api/config", json={"asr": {"backend": "bogus"}}).status_code == 400
+
+
+class TestPreflightEndpoints:
+    def test_config_test_uses_disk_config(self, client, monkeypatch):
+        seen = {}
+
+        def fake_test(cfg, **kw):
+            seen["model"] = cfg.model
+            return preflight.EndpointTestResult(True, latency_ms=12.3, response_preview="你好！")
+
+        monkeypatch.setattr(preflight, "test_translate_endpoint", fake_test)
+        resp = client.post("/api/config/test")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["latency_ms"] == 12.3
+        assert data["response_preview"] == "你好！"
+        assert data["error"] is None
+        assert seen["model"] == "test-model"  # config fixture 里的磁盘配置
+
+    def test_config_test_with_unsaved_form_payload(self, client, monkeypatch):
+        seen = {}
+
+        def fake_test(cfg, **kw):
+            seen["base_url"], seen["model"], seen["api_key"] = (
+                cfg.base_url,
+                cfg.model,
+                cfg.api_key,
+            )
+            return preflight.EndpointTestResult(False, error="boom")
+
+        monkeypatch.setattr(preflight, "test_translate_endpoint", fake_test)
+        resp = client.post(
+            "/api/config/test",
+            json={"translate": {"base_url": "http://127.0.0.1:9/v1", "model": "unsaved-model"}},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is False and resp.json()["error"] == "boom"
+        assert seen["base_url"] == "http://127.0.0.1:9/v1"  # 表单值覆盖磁盘
+        assert seen["model"] == "unsaved-model"
+
+    def test_config_test_masked_api_key_means_unchanged(self, client, config_path, monkeypatch):
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        data["translate"]["api_key"] = "sk-secret123"
+        config_path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+        seen = {}
+
+        def fake_test(cfg, **kw):
+            seen["api_key"] = cfg.api_key
+            return preflight.EndpointTestResult(True, 1.0, "x")
+
+        monkeypatch.setattr(preflight, "test_translate_endpoint", fake_test)
+        resp = client.post("/api/config/test", json={"translate": {"api_key": "sk-...***"}})
+        assert resp.status_code == 200
+        assert seen["api_key"] == "sk-secret123"  # mask 值 = 沿用磁盘上的 key
+        assert "sk-secret123" not in resp.text
+
+    def test_config_test_validation(self, client):
+        assert client.post("/api/config/test", json={"translate": {"nope": 1}}).status_code == 400
+        assert client.post("/api/config/test", json={"translate": "x"}).status_code == 400
+
+    def test_preflight_endpoint_returns_report(self, client, monkeypatch):
+        report = preflight.PreflightReport(
+            [
+                preflight.CheckResult("ffmpeg", preflight.STATUS_OK, "fake"),
+                preflight.CheckResult("GPU", preflight.STATUS_WARN, "无 GPU"),
+            ]
+        )
+        monkeypatch.setattr(preflight, "run_preflight", lambda cfg, **kw: report)
+        resp = client.post("/api/preflight")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert [c["name"] for c in data["checks"]] == ["ffmpeg", "GPU"]
+
+    def test_task_fails_when_recheck_fails(self, config_path, fake_pipeline, monkeypatch, tmp_path):
+        """运行期间模型文件被删：任务执行前的复核拦下，任务 failed 并给出原因。"""
+        monkeypatch.setattr(
+            preflight, "recheck_model_paths", lambda cfg: ["asr.model 路径不存在: /x"]
+        )
+        with TestClient(create_app(config_path=config_path)) as c:
+            media = tmp_path / "movie.mp4"
+            media.touch()
+            task_id = c.post("/api/tasks", json={"path": str(media)}).json()["id"]
+            _wait_status(c, task_id, {"failed"})
+            detail = c.get(f"/api/tasks/{task_id}").json()
+            assert "复核未通过" in detail["error"]
+            assert "asr.model" in detail["error"]
 
 
 class TestMediaAndVideo:
