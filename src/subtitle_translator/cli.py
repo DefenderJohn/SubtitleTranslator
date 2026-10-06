@@ -19,6 +19,7 @@ from typing import Optional, Sequence
 
 from . import pipeline
 from .config import default_config, load_config, resolve_api_key, save_config
+from .logsetup import register_secret, setup_logging
 from .models import SubtitleProject
 from .srt import export_srt
 from .translate import GlossaryNotConfirmedError
@@ -265,6 +266,11 @@ def _cmd_serve(args) -> int:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    # 统一日志配置（console + 滚动文件，均过脱敏过滤器）；
+    # 已配置的 api_key 注册进脱敏过滤器做精确替换
+    cfg = load_config(getattr(args, "config", DEFAULT_CONFIG_PATH))
+    setup_logging(cfg)
+    register_secret(resolve_api_key(cfg))
     if args.command == "run":
         return _cmd_run(args)
     if args.command == "export":

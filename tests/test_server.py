@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 from pathlib import Path
@@ -515,17 +516,18 @@ class TestUploadCleanup:
     def _upload_root(self, config_path) -> Path:
         return Path(yaml.safe_load(config_path.read_text(encoding="utf-8"))["ui"]["upload_dir"])
 
-    def test_shutdown_removes_session_batches(self, config_path, fake_pipeline, capsys):
+    def test_shutdown_removes_session_batches(self, config_path, fake_pipeline, caplog):
         """lifespan shutdown（TestClient with 块退出）删除本会话上传的批次目录。"""
-        with TestClient(create_app(config_path=config_path)) as c:
-            resp = c.post("/api/upload", files=[("files", ("a.mp3", b"1"))])
-            assert resp.status_code == 200
-            batch = Path(resp.json()["batch"])
-            assert batch.is_dir()
-            # 运行中不删：即使文件已落盘，退出前批次目录仍在
-            assert (batch / "a.mp3").is_file()
+        with caplog.at_level(logging.INFO, logger="subtitle_translator.server.app"):
+            with TestClient(create_app(config_path=config_path)) as c:
+                resp = c.post("/api/upload", files=[("files", ("a.mp3", b"1"))])
+                assert resp.status_code == 200
+                batch = Path(resp.json()["batch"])
+                assert batch.is_dir()
+                # 运行中不删：即使文件已落盘，退出前批次目录仍在
+                assert (batch / "a.mp3").is_file()
         assert not batch.exists()
-        assert "退出清理" in capsys.readouterr().err
+        assert "退出清理" in caplog.text
 
     def test_startup_removes_orphan_batches(self, config_path, fake_pipeline):
         """启动时清理 upload_dir 下批次形态的遗留目录（kill -9 兜底）。"""

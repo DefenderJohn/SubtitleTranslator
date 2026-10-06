@@ -16,15 +16,18 @@ HTTP 协议转换与路径 / 参数校验。任务调度见 :mod:`.tasks`。
   localhost 单实例）；运行中不删。服务器路径模式的文件绝不删除；
 - 前端构建产物 frontend/dist 存在时挂载到 /（SPA 路由回退 index.html），
   否则给占位提示页。
+- 启动时经 logsetup.setup_logging 配置统一日志（console + 滚动文件，
+  均挂脱敏过滤器）；GET /api/tasks/{id}/log 返回 per-task 日志尾部
+  （写入时已脱敏，见 :mod:`..logsetup`）。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 import shutil
-import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import asdict, fields
@@ -35,12 +38,13 @@ from urllib.parse import quote
 
 from fastapi import Body, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import (
     AsrConfig,
     Config,
+    LogConfig,
     TranslateConfig,
     UiConfig,
     load_config,
@@ -48,6 +52,7 @@ from ..config import (
     resolve_upload_dir,
     save_config,
 )
+from ..logsetup import register_secret, setup_logging
 from ..models import SubtitleProject
 from ..pipeline import (
     MEDIA_EXTENSIONS,
@@ -59,6 +64,8 @@ from ..pipeline import (
 from ..srt import export_srt
 from .tasks import TERMINAL_STATES, TaskManager
 
+logger = logging.getLogger(__name__)
+
 # 前端构建产物的默认位置：<repo>/frontend/dist（server/app.py 上四级为仓库根）
 DEFAULT_FRONTEND_DIST = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 
@@ -66,6 +73,9 @@ VIDEO_CHUNK_SIZE = 256 * 1024
 
 # 上传流式写盘的分块大小（视频可能几个 GB，不能整个读进内存）
 UPLOAD_CHUNK_SIZE = 1024 * 1024
+
+# 任务日志端点只返回尾部（日志可能很大，前端只看最近部分）
+TASK_LOG_TAIL_BYTES = 200 * 1024
 
 # 下载端点允许的后缀（upload_dir 内的文件不受后缀限制）
 DOWNLOAD_SUFFIXES = (".srt", PROJECT_SUFFIX)
@@ -206,7 +216,7 @@ def _remove_batch_dirs(batches: list[Path]) -> tuple[int, int]:
         except FileNotFoundError:
             continue
         except OSError as exc:
-            print(f"警告：删除上传批次目录失败 {batch}（{exc}）", file=sys.stderr)
+            logger.warning("删除上传批次目录失败 %s（%s）", batch, exc)
             continue
         removed += 1
         freed += size
@@ -263,7 +273,12 @@ def _download_url(path: Union[str, Path]) -> str:
 
 
 def _config_payload(cfg: Config) -> dict:
-    data = {"asr": asdict(cfg.asr), "translate": asdict(cfg.translate), "ui": asdict(cfg.ui)}
+    data = {
+        "asr": asdict(cfg.asr),
+        "translate": asdict(cfg.translate),
+        "ui": asdict(cfg.ui),
+        "log": asdict(cfg.log),
+    }
     data["translate"]["api_key"] = _mask_api_key(cfg.translate.api_key)
     # 告知前端密钥是否已可用（可能来自 api_key_env 环境变量），不泄露值
     data["translate"]["api_key_resolved"] = resolve_api_key(cfg) is not None
@@ -317,6 +332,11 @@ def create_app(
     frontend_dist: Optional[Union[str, Path]] = None,
 ) -> FastAPI:
     config_path = Path(config_path)
+    # 统一日志配置（console + 滚动文件，均过脱敏过滤器；幂等，重复 create_app 不叠加）；
+    # 已配置的 api_key 注册进脱敏过滤器做精确替换
+    cfg = load_config(config_path)
+    setup_logging(cfg)
+    register_secret(resolve_api_key(cfg))
     manager = TaskManager(config_path)
     # 上传会话：本会话创建的批次目录集合（内存），退出时统一清理；
     # 启动时清理 upload_dir 下非本会话的遗留批次（kill -9 / 断电兜底，
@@ -328,10 +348,9 @@ def create_app(
     async def lifespan(app: FastAPI):
         upload_root = resolve_upload_dir(load_config(config_path))
         removed, freed = _remove_batch_dirs(_find_orphan_batches(upload_root, session_batches))
-        print(
-            f"[session {session_id}] 启动清理：移除遗留上传批次 {removed} 个，"
-            f"释放 {_format_size(freed)}（upload_dir={upload_root}）",
-            file=sys.stderr,
+        logger.info(
+            "[session %s] 启动清理：移除遗留上传批次 %d 个，释放 %s（upload_dir=%s）",
+            session_id, removed, _format_size(freed), upload_root,
         )
         manager.start()
         try:
@@ -340,10 +359,9 @@ def create_app(
             # 先停 worker（跑着的任务可能正往批次目录写产物），再删批次
             await manager.stop()
             removed, freed = _remove_batch_dirs(sorted(session_batches))
-            print(
-                f"[session {session_id}] 退出清理：删除本次会话上传批次 {removed} 个，"
-                f"释放 {_format_size(freed)}",
-                file=sys.stderr,
+            logger.info(
+                "[session %s] 退出清理：删除本次会话上传批次 %d 个，释放 %s",
+                session_id, removed, _format_size(freed),
             )
 
     app = FastAPI(title="SubtitleTranslator", lifespan=lifespan)
@@ -427,6 +445,25 @@ def create_app(
             stream(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # ---------------------------------------------------------- 任务日志
+
+    @app.get("/api/tasks/{task_id}/log", response_class=PlainTextResponse)
+    def task_log(task_id: str):
+        """任务日志（尾部优先，最多返回最后 TASK_LOG_TAIL_BYTES 字节）。
+
+        日志写入时已过脱敏过滤器；任务尚未执行（无日志文件）返回 404。
+        """
+        task = _get_task(task_id)
+        if not task.log_path or not Path(task.log_path).is_file():
+            raise HTTPException(status_code=404, detail="任务日志不存在（任务可能尚未开始执行）")
+        data = Path(task.log_path).read_bytes()
+        truncated = len(data) > TASK_LOG_TAIL_BYTES
+        text = data[-TASK_LOG_TAIL_BYTES:].decode("utf-8", errors="replace")
+        return PlainTextResponse(
+            text,
+            headers={"X-Log-Truncated": "1" if truncated else "0"},
         )
 
     # ---------------------------------------------------------- 媒体
@@ -600,7 +637,12 @@ def create_app(
     @app.put("/api/config")
     def update_config(payload: dict = Body(...)):
         """局部更新 config.yaml。api_key 传空字符串或 mask 值表示不修改。"""
-        section_classes = {"asr": AsrConfig, "translate": TranslateConfig, "ui": UiConfig}
+        section_classes = {
+            "asr": AsrConfig,
+            "translate": TranslateConfig,
+            "ui": UiConfig,
+            "log": LogConfig,
+        }
         unknown_sections = set(payload) - set(section_classes)
         if unknown_sections:
             raise HTTPException(status_code=400, detail=f"未知配置节: {sorted(unknown_sections)}")

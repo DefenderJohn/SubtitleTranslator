@@ -152,9 +152,9 @@ JSON schema：
 ## 7. 配置（config.py）
 
 - 单份 `config.yaml` 为唯一配置存储，网页 / CLI / 脚本共用。
-- 分三节：`asr` / `translate` / `ui`。
+- 分四节：`asr` / `translate` / `ui` / `log`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）；`ui.host=127.0.0.1`、`ui.port=7860`、`ui.upload_dir=""`（空=`~/.subtitle_translator/uploads`，`resolve_upload_dir` 解析，支持 `~` 展开）。
+- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）；`ui.host=127.0.0.1`、`ui.port=7860`、`ui.upload_dir=""`（空=`~/.subtitle_translator/uploads`，`resolve_upload_dir` 解析，支持 `~` 展开）；`log.level=INFO`（控制台级别，文件日志始终 DEBUG 起）、`log.dir=""`（空=`~/.subtitle_translator/logs`，`resolve_log_dir` 解析，支持 `~` 展开）。
 
 ## 8. 网页（server/ + frontend/）
 
@@ -196,6 +196,7 @@ JSON schema：
 | GET | `/api/tasks/{id}/events` | SSE 订阅（历史回放 + 实时推送，终态关流） |
 | POST | `/api/tasks/{id}/cancel` | 取消（协作式）；终态返回 409 |
 | POST | `/api/tasks/{id}/resume` | waiting_confirm 任务重新排队继续；其他状态 409 |
+| GET | `/api/tasks/{id}/log` | per-task 日志文本（尾部优先，最多最后 200KB，`X-Log-Truncated` 头标记截断）；日志写入时已脱敏；任务未执行过（无日志文件）404 |
 | GET | `/api/media?path=` | 浏览目录：返回子目录名 + 递归媒体文件清单（复用 find_media_files）；path 省略/为空时默认用户主目录；遍历中无权限/不可读的条目跳过，不因权限问题 500 |
 | GET | `/api/video?path=` | 视频流，支持单区间 Range（bytes=start-end / start- / -suffix），206 + Content-Range，非法区间 416 |
 | POST | `/api/upload` | 浏览器上传：multipart 字段 `files`（可多文件），流式写盘到 `ui.upload_dir` 的批次子目录，返回 `{batch, paths}`；paths 直接用于创建任务 |
@@ -219,6 +220,18 @@ JSON schema：
 | PUT | `/api/config` | 局部更新（按节给 dict，未知节/字段 400，改后重建配置节触发校验）；api_key 传空字符串或 mask 值表示不修改；文件里已有/新设明文 key 时保留，否则不落盘明文 |
 
 启动：`subtitle-translator serve [--config path] [--host] [--port]`（host/port 默认取 ui 节配置）。
+
+### 8.3 日志与脱敏（logsetup.py）
+
+工具会分发给他人使用，**日志不能泄露隐私**：所有日志 handler 统一挂脱敏过滤器。
+
+- **统一配置**（`logsetup.setup_logging`，cli 入口与 server `create_app` 共用，幂等可重复调用）：console handler（简洁格式 `级别 [模块] 消息`，级别取 `log.level`）+ RotatingFileHandler（`<log.dir>/subtitle-translator.log`，10MB×5 滚动，DEBUG 起，完整格式含时间/模块/行号）。root logger 固定 DEBUG，级别由各 handler 控制。`shutdown_logging()` 摘除本模块安装的全部 handler（测试隔离用）。
+- **脱敏过滤器**（`SanitizeFilter`，全局单例挂到所有 handler，清洗每条记录的 message）：
+  - 注册的密钥精确替换：`register_secret(resolve_api_key(cfg))` 在 cli 入口、server 启动、每个任务执行时（配置可能刚改过）各注册一次；短于 8 字符的值不注册（占位符如 `"0"` 做精确替换会毁掉正常日志）；
+  - 通用模式打码：`sk-[A-Za-z0-9]{8,}` → `sk-***`；`Bearer xxx` → `Bearer ***`；`api_key=` / `apikey=` / `access_token=` / `token=` / `key=` 键值形态（含 URL query，不吞 `&` 后续参数）→ `键=***`；
+  - 路径脱敏：用户主目录前缀（`Path.home()`）替换为 `~`。
+- **per-task 日志**：任务开始执行时 TaskManager 建 `<log.dir>/tasks/<task_id>.log` 的 FileHandler 挂到 root logger（`create_task_log_handler`）；归属判定用 contextvars——任务执行期间进入 `task_log_context(task_id)`（`asyncio.to_thread` 会把 context 传播进 worker 线程，pipeline/transcribe/translate 的日志都算该任务的），handler 上的 `TaskLogFilter` 只放行本任务记录。任务边界记生命周期日志，失败时 `logger.exception` 落完整 traceback；任务结束（含 waiting_confirm）摘除 handler，文件保留供 `/api/tasks/{id}/log` 读取（resume 重跑追加写同一文件）。
+- **约定**：诊断信息一律走 logger 不走 print；CLI 面向用户的输出（进度、结果、错误提示）保留 print。
 
 ## 9. 断点续传
 

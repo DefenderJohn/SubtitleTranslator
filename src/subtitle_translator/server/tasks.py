@@ -15,18 +15,32 @@
   :class:`~subtitle_translator.pipeline.PipelineCancelledError`，translate
   阶段会把已翻译的 cue 落盘（stage 保持 contexted），resume / 重跑即续上；
 - 每次执行任务时重新加载 config.yaml，网页改配置对后续任务生效。
+- per-task 日志：任务开始时把 ``<log.dir>/tasks/<task_id>.log`` 的
+  FileHandler 挂到 root logger（logsetup.create_task_log_handler，带脱敏
+  过滤器和按 contextvars task_id 过滤的 TaskLogFilter），任务边界统一
+  记录生命周期日志，失败时 logger.exception 落完整 traceback；任务结束
+  （含 waiting_confirm）摘除 handler，文件保留供 ``GET /api/tasks/{id}/log``
+  读取。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
-from ..config import load_config
+from ..config import load_config, resolve_api_key, resolve_log_dir
+from ..logsetup import (
+    TASK_LOG_DIR_NAME,
+    create_task_log_handler,
+    register_secret,
+    reset_task_log_context,
+    task_log_context,
+)
 from ..pipeline import (
     PIPELINE_STAGES,
     PipelineCancelledError,
@@ -36,6 +50,8 @@ from ..pipeline import (
     run_pipeline,
 )
 from ..translate import GlossaryNotConfirmedError
+
+logger = logging.getLogger(__name__)
 
 TASK_PENDING = "pending"
 TASK_RUNNING = "running"
@@ -70,6 +86,7 @@ class Task:
     events: list[dict] = field(default_factory=list)
     error: Optional[str] = None
     cancel_requested: bool = False
+    log_path: Optional[str] = None  # per-task 日志文件（任务开始执行时创建）
 
     def snapshot(self) -> dict:
         """列表 / 详情接口的序列化视图（progress 为最近一条事件快照）。
@@ -109,6 +126,7 @@ class TaskManager:
         self._queue: Optional[asyncio.Queue] = None
         self._worker: Optional[asyncio.Task] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._task_handlers: dict[str, logging.Handler] = {}
 
     # ---------------------------------------------------------- 生命周期
 
@@ -128,6 +146,8 @@ class TaskManager:
             except asyncio.CancelledError:
                 pass
             self._worker = None
+        for task_id in list(self._task_handlers):
+            self._detach_task_log(task_id)
 
     # ---------------------------------------------------------- 任务操作
 
@@ -201,6 +221,28 @@ class TaskManager:
         if subscribers and queue in subscribers:
             subscribers.remove(queue)
 
+    # ---------------------------------------------------------- per-task 日志
+
+    def _attach_task_log(self, task: Task) -> None:
+        """为任务创建 ``<log.dir>/tasks/<task_id>.log`` handler（挂到 root logger）。
+
+        handler 上的 TaskLogFilter 只放行该任务上下文（contextvars）里产生的
+        记录；脱敏过滤器与全局一致。重复调用（resume 重跑）追加写同一文件。
+        """
+        log_dir = resolve_log_dir(load_config(self.config_path))
+        log_path = log_dir / TASK_LOG_DIR_NAME / f"{task.id}.log"
+        handler = create_task_log_handler(log_path, task.id)
+        logging.getLogger().addHandler(handler)
+        self._task_handlers[task.id] = handler
+        task.log_path = str(log_path)
+
+    def _detach_task_log(self, task_id: str) -> None:
+        """任务结束后摘除 handler（日志文件保留，供 /log 端点读取）。"""
+        handler = self._task_handlers.pop(task_id, None)
+        if handler is not None:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
     # ---------------------------------------------------------- 内部
 
     def _enqueue(self, task: Task) -> None:
@@ -240,28 +282,44 @@ class TaskManager:
             if task is None or task.status != TASK_PENDING:
                 continue  # 排队期间被取消 / 状态已变化
             task.status = TASK_RUNNING
-            self._emit_status(task, "任务开始")
+            self._attach_task_log(task)
+            # 任务日志上下文：contextvars 随 asyncio.to_thread 传播进 worker
+            # 线程，任务内产生的日志记录（含 pipeline/transcribe/translate）
+            # 全部进入 per-task 日志文件
+            token = task_log_context(task.id)
             try:
+                self._emit_status(task, "任务开始")
+                logger.info("任务 %s 开始：%s（options=%s）", task.id, task.path, task.options)
                 await asyncio.to_thread(self._run_sync, task)
             except PipelineCancelledError:
                 task.status = TASK_CANCELLED
                 task.error = None
+                logger.info("任务 %s 已取消", task.id)
                 self._emit_status(task, "任务已取消，进度已保存")
             except GlossaryNotConfirmedError as exc:
                 task.status = TASK_WAITING_CONFIRM
                 task.error = str(exc)
+                logger.info("任务 %s 进入术语表待确认：%s", task.id, exc)
                 self._emit_status(task, "术语表待人工确认，等待网页确认后 resume")
             except Exception as exc:  # noqa: BLE001 - 任务边界统一兜底
                 task.status = TASK_FAILED
                 task.error = f"{type(exc).__name__}: {exc}"
+                # 完整 traceback 进任务日志（脱敏过滤器已挂在 handler 上）
+                logger.exception("任务 %s 失败", task.id)
                 self._emit_status(task, f"任务失败：{task.error}")
             else:
                 task.status = TASK_DONE
+                logger.info("任务 %s 完成", task.id)
                 self._emit_status(task, "任务完成")
+            finally:
+                reset_task_log_context(token)
+                self._detach_task_log(task.id)
 
     def _run_sync(self, task: Task) -> None:
         """worker 线程里跑同步 pipeline。progress_cb 记录事件并检查取消标志。"""
         cfg = load_config(self.config_path)
+        # 本次任务的 api_key 注册进脱敏过滤器（配置可能刚在网页改过）
+        register_secret(resolve_api_key(cfg))
         options = task.options
         if options.get("language"):
             cfg.asr.language = options["language"]

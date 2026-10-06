@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   Card,
+  Drawer,
   Space,
   Tabs,
   Tag,
@@ -14,6 +15,7 @@ import {
   ArrowLeftOutlined,
   DownloadOutlined,
   ExportOutlined,
+  FileTextOutlined,
 } from "@ant-design/icons";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -35,6 +37,9 @@ export default function TaskDetailPage() {
   const [notFound, setNotFound] = useState<string | null>(null);
   const [srtPath, setSrtPath] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logText, setLogText] = useState<string | null>(null);
+  const [logLoading, setLogLoading] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -92,6 +97,20 @@ export default function TaskDetailPage() {
     }
   }, [task]);
 
+  const openLog = useCallback(async () => {
+    if (!taskId) return;
+    setLogOpen(true);
+    setLogLoading(true);
+    try {
+      setLogText(await api.getTaskLog(taskId));
+    } catch (err) {
+      setLogText(null);
+      message.warning(`日志不可用：${(err as Error).message}`);
+    } finally {
+      setLogLoading(false);
+    }
+  }, [taskId]);
+
   if (notFound) {
     return <Alert type="error" message={`任务加载失败：${notFound}`} />;
   }
@@ -120,6 +139,13 @@ export default function TaskDetailPage() {
               {task.media.map(basename).join("、") || basename(task.path)}
             </Typography.Title>
             <Tag color={tag.color}>{tag.label}</Tag>
+            <Button
+              size="small"
+              icon={<FileTextOutlined />}
+              onClick={() => void openLog()}
+            >
+              查看日志
+            </Button>
           </Space>
           <Typography.Text type="secondary" copyable>
             {task.path}
@@ -219,6 +245,39 @@ export default function TaskDetailPage() {
           ]}
         />
       </Card>
+
+      <Drawer
+        title="任务日志"
+        placement="right"
+        width={720}
+        open={logOpen}
+        onClose={() => setLogOpen(false)}
+        extra={
+          <Button size="small" onClick={() => void openLog()} loading={logLoading}>
+            刷新
+          </Button>
+        }
+      >
+        {logLoading && !logText ? (
+          <Typography.Text type="secondary">加载中…</Typography.Text>
+        ) : logText ? (
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              fontFamily: "monospace",
+              fontSize: 12,
+              margin: 0,
+            }}
+          >
+            {logText}
+          </pre>
+        ) : (
+          <Typography.Text type="secondary">
+            暂无日志（任务尚未开始执行，或日志文件已被清理）
+          </Typography.Text>
+        )}
+      </Drawer>
     </Space>
   );
 }

@@ -116,6 +116,11 @@ export interface UiConfigPayload {
   upload_dir: string; // 空 = ~/.subtitle_translator/uploads
 }
 
+export interface LogConfigPayload {
+  level: string; // DEBUG / INFO / WARNING / ERROR / CRITICAL（控制台级别；文件始终 DEBUG）
+  dir: string; // 空 = ~/.subtitle_translator/logs
+}
+
 /** POST /api/upload 响应：批次目录 + 服务器侧文件路径（拿去建任务） */
 export interface UploadResponse {
   batch: string;
@@ -126,6 +131,7 @@ export interface ConfigPayload {
   asr: AsrConfigPayload;
   translate: TranslateConfigPayload;
   ui: UiConfigPayload;
+  log: LogConfigPayload;
 }
 
 // ---------------------------------------------------------------- 请求封装
@@ -172,6 +178,22 @@ export const api = {
     request<TaskSnapshot>(`/api/tasks/${id}/cancel`, { method: "POST" }),
   resumeTask: (id: string) =>
     request<TaskSnapshot>(`/api/tasks/${id}/resume`, { method: "POST" }),
+
+  /** 任务日志（GET /api/tasks/{id}/log，纯文本，尾部优先） */
+  getTaskLog: async (id: string): Promise<string> => {
+    const resp = await fetch(`/api/tasks/${id}/log`);
+    if (!resp.ok) {
+      let detail = `HTTP ${resp.status}`;
+      try {
+        const body = await resp.json();
+        if (typeof body.detail === "string") detail = body.detail;
+      } catch {
+        // 保留默认 detail
+      }
+      throw new ApiError(resp.status, detail);
+    }
+    return resp.text();
+  },
 
   /** SSE 订阅（历史回放 + 实时推送），返回 EventSource 由调用方关闭 */
   subscribeTaskEvents: (

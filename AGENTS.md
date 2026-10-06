@@ -10,6 +10,8 @@ SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 
 ├── pyproject.toml              # 现代打包（src 布局）；重依赖在 optional extras
 ├── src/subtitle_translator/    # core 库
 │   ├── config.py               # 单份 config.yaml 加载与校验（api_key_env 引用）
+│   ├── logsetup.py             # 日志统一配置 + 脱敏过滤器（SanitizeFilter）
+│   │                           #   + per-task 日志（contextvars 归属）
 │   ├── models.py               # 数据结构 / JSON schema（唯一事实来源）
 │   ├── transcribe.py           # 转录层：qwen-asr，vLLM / transformers 双 backend，
 │   │                           #   ffmpeg silencedetect 切块（对齐器输入上限）
@@ -43,3 +45,4 @@ SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 
 - **进度回调协议**：`progress_cb({"media", "stage", "done", "total", "message"})`（pipeline 层统一定义，网页 SSE 直接复用；transcribe / translate 内层的 `(done, total)` 回调由 pipeline 包装成该协议）。
 - **协作式取消**：`progress_cb` 抛 `pipeline.PipelineCancelledError` 即取消（当前 cue/块完成后停，translate 阶段会先落盘已翻译 cue）；网页层在回调里检查任务取消标志。
 - **server 层**：fastapi/uvicorn/httpx 在 `web`/`dev` extras，延迟导入保持 core 可独立用；业务逻辑不写在 server（薄壳，只协议转换）；SSE 事件 = pipeline 五键 + task_id + status。
+- **日志**：诊断信息一律走 `logging`（模块级 `logger = logging.getLogger(__name__)`），不走 print；CLI 面向用户的输出（进度/结果/报错）才用 print。入口（cli main / server create_app）统一调 `logsetup.setup_logging`；日志经 `SanitizeFilter` 脱敏（api key、Bearer、URL query key/token、主目录路径→`~`），新增密钥类信息必须确认会被过滤器覆盖。

@@ -1,6 +1,6 @@
 """YAML 配置加载与保存。
 
-单份 config.yaml 为唯一配置存储，网页 / CLI / 脚本共用，分 asr / translate / ui 三节。
+单份 config.yaml 为唯一配置存储，网页 / CLI / 脚本共用，分 asr / translate / ui / log 四节。
 
 api_key 安全：``resolve_api_key`` 优先取 ``api_key_env`` 指向的环境变量，
 其次才是 yaml 里的明文 api_key；``save_config`` 默认不写入明文密钥。
@@ -63,12 +63,32 @@ class UiConfig:
 # upload_dir 为空时的默认上传存储目录
 DEFAULT_UPLOAD_DIR = Path("~/.subtitle_translator/uploads")
 
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+@dataclass
+class LogConfig:
+    level: str = "INFO"  # 控制台日志级别（文件日志始终 DEBUG 起）
+    dir: str = ""  # 日志目录，空=~/.subtitle_translator/logs
+
+    def __post_init__(self) -> None:
+        if self.level.upper() not in LOG_LEVELS:
+            raise ValueError(
+                f"非法 log.level: {self.level!r}，合法取值为: {', '.join(LOG_LEVELS)}"
+            )
+        self.level = self.level.upper()
+
+
+# log.dir 为空时的默认日志目录
+DEFAULT_LOG_DIR = Path("~/.subtitle_translator/logs")
+
 
 @dataclass
 class Config:
     asr: AsrConfig = field(default_factory=AsrConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    log: LogConfig = field(default_factory=LogConfig)
 
 
 def resolve_upload_dir(cfg: Union[Config, UiConfig]) -> Path:
@@ -76,6 +96,13 @@ def resolve_upload_dir(cfg: Union[Config, UiConfig]) -> Path:
     ui = cfg.ui if isinstance(cfg, Config) else cfg
     raw = ui.upload_dir.strip()
     return Path(raw).expanduser() if raw else DEFAULT_UPLOAD_DIR.expanduser()
+
+
+def resolve_log_dir(cfg: Union[Config, LogConfig]) -> Path:
+    """解析日志目录：log.dir 为空时用默认值，支持 ~ 展开。"""
+    log = cfg.log if isinstance(cfg, Config) else cfg
+    raw = log.dir.strip()
+    return Path(raw).expanduser() if raw else DEFAULT_LOG_DIR.expanduser()
 
 
 def _section_from_dict(cls: type, data: Any) -> Any:
@@ -100,6 +127,7 @@ def load_config(path: Union[str, Path]) -> Config:
         asr=_section_from_dict(AsrConfig, data.get("asr")),
         translate=_section_from_dict(TranslateConfig, data.get("translate")),
         ui=_section_from_dict(UiConfig, data.get("ui")),
+        log=_section_from_dict(LogConfig, data.get("log")),
     )
 
 
@@ -113,6 +141,7 @@ def save_config(
         "asr": asdict(cfg.asr),
         "translate": asdict(cfg.translate),
         "ui": asdict(cfg.ui),
+        "log": asdict(cfg.log),
     }
     if not include_api_key:
         data["translate"]["api_key"] = None
