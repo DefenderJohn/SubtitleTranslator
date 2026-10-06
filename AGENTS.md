@@ -17,9 +17,10 @@ SubtitleTranslator：音视频字幕转录与翻译工具。core 纯 Python 库 
 │   │                           #   ffmpeg silencedetect 切块（对齐器输入上限）
 │   ├── media.py                # ffmpeg 封装：时长探测 / 静音检测 / 音频切块
 │   ├── segment.py              # 分段器：词级时间戳 → 字幕行
-│   ├── translate/              # 翻译层：OpenAI 兼容端点，三步走，可插拔策略
-│   │                           #   client.py(SDK封装+退避) prompts.py context.py
-│   │                           #   glossary.py strategy.py(ABC+SlidingWindow)
+│   ├── translate/              # 翻译层：OpenAI 兼容端点，三步走，可插拔策略，
+│   │                           #   全部走 JSON schema 结构化输出（不降级）；
+│   │                           #   client.py(SDK封装+退避+chat_json) prompts.py(模板+schema)
+│   │                           #   context.py glossary.py strategy.py(ABC+SlidingWindow)
 │   ├── pipeline.py             # 流水线编排 + 断点续传（stage 驱动）+ run_batch 批量；
 │   │                           #   进度回调协议 progress_cb({media,stage,done,total,message})
 │   ├── preflight.py            # 启动预检：ffmpeg/模型文件/翻译端点连通性/GPU，

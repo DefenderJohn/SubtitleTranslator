@@ -120,8 +120,10 @@ translate:
   target_language: 简体中文
   request_timeout: 120.0   # 单次请求超时（秒）
   max_retries: 4           # 429/5xx/超时的指数退避重试次数
-  glossary_max_retries: 3  # 术语表解析失败的重试次数
+  glossary_max_retries: 3  # 术语表输出无效的重试次数
 ```
+
+**端点要求：必须支持 OpenAI `response_format` 的 `json_schema` 结构化输出**。摘要、术语表、逐句翻译全部按 JSON schema 约束模型输出（OpenAI strict 模式 / vLLM guided decoding 同一形态），不做格式降级。主流端点都支持：OpenAI、DeepSeek、通义 DashScope 兼容模式、GLM、本地 vLLM / Ollama（较新版本）。端点不支持时会在首次调用报 HTTP 400，错误信息里会带「请确认端点支持 response_format json_schema」提示——此时请更换或升级端点。
 
 三个常见端点的填法：
 
@@ -320,10 +322,11 @@ subtitle-translator run movie.sub.json --from-json --auto-confirm
 
 **翻译接口报错排查**
 - `translate.model 未配置`：config 里填 `model`。
+- `HTTP 400 + 提示「请确认端点支持 response_format json_schema」`：端点不支持 JSON schema 结构化输出（本工具摘要/术语表/逐句翻译都强制使用，见 3.3「端点要求」）。更换或升级端点；本地 vLLM / Ollama 换较新版本。
 - 401/鉴权失败：`api_key_env` 指向的环境变量是否真的设置了（`echo $DEEPSEEK_API_KEY`）；变量名不要填成密钥本身。
 - 连接 refused：`base_url` 是否带 `/v1` 后缀、端口对不对；本地端点先确认服务起来了。
 - 429/5xx/超时：客户端会自动指数退避重试（默认最多 4 次、单次超时 120 秒），偶发不用管；持续失败再调 `request_timeout` / `max_retries` 或换端点。
-- 没有真实 API key 也想验证翻译链路：仓库自带 mock 端点 `python scripts/mock_translate_server.py --port 8399`，把 `translate.base_url` 指向 `http://127.0.0.1:8399/v1` 即可。
+- 没有真实 API key 也想验证翻译链路：仓库自带 mock 端点 `python scripts/mock_translate_server.py --port 8399`（按 schema 回声合法 JSON；`--reject-response-format` 可模拟不支持的端点验证报错提示），把 `translate.base_url` 指向 `http://127.0.0.1:8399/v1` 即可。
 
 **想换 Whisper 或其他 ASR**
 架构上转录 backend 是可插拔的（`AsrBackend` 抽象），但当前只实现了 Qwen3-ASR；换 Whisper 需要写一个新的 backend 实现，属于开发改动，见 [DESIGN.md](DESIGN.md) 第 3 节。

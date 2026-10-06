@@ -106,12 +106,13 @@ subtitle-translator config init [path]
 ## 5. 翻译层（translate/）
 
 - 接口：OpenAI 兼容端点，端点连接配置为四字段：`base_url` / `api_key`（或 `api_key_env`）/ `model` / `temperature`（其余翻译行为配置见 §7）。本地 vLLM / Ollama 也走同一接口。HTTP 用官方 `openai` SDK 的 chat.completions（非 streaming），SDK 自重试关闭，由 `client.py` 统一做指数退避（429 / 5xx / 超时 / 连接错误，最多 `max_retries` 次，超时 `request_timeout` 默认 120s）。
-- 模块拆分：`client.py`（SDK 封装+退避）、`prompts.py`（prompt 模板）、`context.py`（摘要）、`glossary.py`（术语表提取与解析）、`strategy.py`（策略 ABC + 实现）。
+- **结构化输出（不设降级）**：摘要 / 术语表 / 逐句翻译全部走 `client.chat_json`，强制携带 `response_format={"type": "json_schema", "json_schema": {"name", "schema"}}`（OpenAI strict 模式 / vLLM guided decoding 同一形态），三个 schema 定义在 `prompts.py` 与各自 prompt 相邻（同一份约定的两份表达）：摘要 `{summary: str}`、术语表 `{entries: [{src, dst, count}]}`、逐句 `{translation: str}`。**刻意不做能力探测与格式降级**：主流端点（OpenAI / DeepSeek / vLLM / GLM 等）都支持 json_schema；端点不支持时 HTTP 400 原样抛出并附「请确认端点支持 response_format json_schema」提示，由用户换端点，而不是退回脆弱的文本解析。`chat`（纯文本，不带 response_format）保留给预检连通性测试等简单调用。
+- 模块拆分：`client.py`（SDK 封装+退避+结构化输出）、`prompts.py`（prompt 模板+response schema）、`context.py`（摘要）、`glossary.py`（术语表提取与解析）、`strategy.py`（策略 ABC + 实现）。
 - 三步走（`SlidingWindowStrategy.translate(project, cfg, progress_cb=None, auto_confirm=False)` 编排，断点续传时已完成步骤自动跳过）：
-  1. **摘要**：整片字幕一次调用生成摘要，存入 `project.meta.summary`；全文超过 `SUMMARY_MAX_CHARS`（常量，100K 字符）时按 cue 边界分块 map-reduce（逐块摘要→合并摘要）；
-  2. **术语表**：基于摘要+全文提取高频专名，要求模型按固定格式 `原文 | 译文 | 出现次数` 逐行输出，解析成 GlossaryEntry，上限 `glossary_max_entries`；一条都解析不出时换提示（追加严格格式说明）并降批（条数上限减半）重试，最多 `glossary_max_retries` 次，仍失败抛 `GlossaryExtractError`。**生成后 stage 变为 `contexted`；逐句翻译开始前必须所有条目 `confirmed=true`**（人工确认检查点），否则抛 `GlossaryNotConfirmedError`；`auto_confirm=True`（CLI `--auto-confirm`）自动全部置 true；
-  3. **滑动窗口逐句翻译**：每条 cue 的 messages 组装为：system（角色 + 目标语言 + additional_prompt + 摘要 + 已确认术语表）→ 前 `history_count` 条已翻译的「原文→译文」拼成 user/assistant 消息对 → 当前 user（待译原文 + 后 `forward_count` 条原文，明确标注「不要翻译」）。调用间是独立请求，无服务端状态。
-- **防御性解析**：译文剥离编号前缀与多余空白；空输出 / 明显复读（译文 > 原文 10 倍或 > 500 字符）触发单条重试（最多 2 次，第二次降 temperature 至一半），仍失败保留原文占位并打 `translation_failed` 标记，不中断整体流程。
+  1. **摘要**：整片字幕一次调用生成摘要（schema `{summary}`，取 `summary` 字段），存入 `project.meta.summary`；全文超过 `SUMMARY_MAX_CHARS`（常量，100K 字符）时按 cue 边界分块 map-reduce（逐块摘要→合并摘要）；
+  2. **术语表**：基于摘要+全文提取高频专名（schema `{entries: [{src, dst, count}]}`），解析成 GlossaryEntry，上限 `glossary_max_entries`；JSON 无效或无有效条目时原提示重试，最多 `glossary_max_retries` 次，仍失败抛 `GlossaryExtractError`。**生成后 stage 变为 `contexted`；逐句翻译开始前必须所有条目 `confirmed=true`**（人工确认检查点），否则抛 `GlossaryNotConfirmedError`；`auto_confirm=True`（CLI `--auto-confirm`）自动全部置 true；
+  3. **滑动窗口逐句翻译**（schema `{translation}`，取 `translation` 字段）：每条 cue 的 messages 组装为：system（角色 + 目标语言 + additional_prompt + 摘要 + 已确认术语表）→ 前 `history_count` 条已翻译的「原文→译文」拼成 user/assistant 消息对 → 当前 user（待译原文 + 后 `forward_count` 条原文，明确标注「不要翻译」）。调用间是独立请求，无服务端状态。
+- **译文异常检测**：空输出 / 明显复读（译文 > 原文 10 倍或 > 500 字符）触发单条重试（最多 2 次，第二次降 temperature 至一半），仍失败保留原文占位并打 `translation_failed` 标记，不中断整体流程。
 - **术语后校验**（第一版只标记不重翻）：原文含某术语 src 而译文不含对应 dst，在该 cue 的 `flags` 上记 `glossary_miss:<src>`。
 - 进度回调：`progress_cb(done, total)`，逐条推进。
 - 翻译策略为可插拔接口 `TranslationStrategy` ABC（`translate(project, cfg, progress_cb, auto_confirm) -> project`），第一版只实现 `SlidingWindowStrategy`；测试注入 fake client，不打真实 API。
@@ -157,7 +158,7 @@ JSON schema：
 - 查找规则：CLI / serve 默认读**当前工作目录**的 `config.yaml`（`--config` 可指定别的路径），文件不存在时静默用内置默认值——没有其他 fallback（不查 `~/.subtitle_translator/`、不查安装目录），改配置必须改到生效的那份上。
 - 分四节：`asr` / `translate` / `ui` / `log`。
 - `translate.api_key` 支持 `api_key_env` 环境变量引用，避免明文密钥入库；`api_key_env` 优先于明文，`save_config` 默认不落盘明文 key。
-- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表解析重试）；`ui.host=127.0.0.1`、`ui.port=7860`、`ui.upload_dir=""`（空=`~/.subtitle_translator/uploads`，`resolve_upload_dir` 解析，支持 `~` 展开）；`log.level=INFO`（控制台级别，文件日志始终 DEBUG 起）、`log.dir=""`（空=`~/.subtitle_translator/logs`，`resolve_log_dir` 解析，支持 `~` 展开）。
+- 默认值：`asr.backend=transformers`（可选 `vllm`，需 `asr-vllm` extra，Turing 等老卡不建议）、`asr.model=Qwen/Qwen3-ASR-1.7B`、`asr.aligner_model=Qwen/Qwen3-ForcedAligner-0.6B`、`asr.chunk_max_seconds=290`（对齐器输入上限留余量；qwen-asr 内部还会按 180s 再切块）、`asr.dtype=float16`（Turing 等不支持 bf16 原生计算的卡用 float16，bf16 机器可自行改回）、`asr.language=null`（源语言，null=自动检测；支持 ISO 代码如 en/zh）、`asr.ffmpeg_path=""`（空=自动探测：PATH → imageio-ffmpeg）；`translate.history_count=10`、`forward_count=1`、`glossary_max_entries=50`、`target_language=简体中文`、`additional_prompt=翻译当前字幕到简体中文`、`request_timeout=120`（秒）、`max_retries=4`（HTTP 退避重试）、`glossary_max_retries=3`（术语表输出无效的重试）；`ui.host=127.0.0.1`、`ui.port=7860`、`ui.upload_dir=""`（空=`~/.subtitle_translator/uploads`，`resolve_upload_dir` 解析，支持 `~` 展开）；`log.level=INFO`（控制台级别，文件日志始终 DEBUG 起）、`log.dir=""`（空=`~/.subtitle_translator/logs`，`resolve_log_dir` 解析，支持 `~` 展开）。
 
 ## 8. 网页（server/ + frontend/）
 
