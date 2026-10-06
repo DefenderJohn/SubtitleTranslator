@@ -230,14 +230,23 @@ export default function SettingsPage() {
               key: "ui",
               label: "界面",
               children: (
-                <Space size="large" wrap>
-                  <Form.Item label="监听地址" name={["ui", "host"]}>
-                    <Input style={{ width: 160 }} />
+                <>
+                  <Space size="large" wrap>
+                    <Form.Item label="监听地址" name={["ui", "host"]}>
+                      <Input style={{ width: 160 }} />
+                    </Form.Item>
+                    <Form.Item label="端口" name={["ui", "port"]}>
+                      <InputNumber min={1} max={65535} style={{ width: 120 }} />
+                    </Form.Item>
+                  </Space>
+                  <Form.Item
+                    label="上传存储目录"
+                    name={["ui", "upload_dir"]}
+                    tooltip="网页上传文件的落盘位置；留空为 ~/.subtitle_translator/uploads"
+                  >
+                    <Input placeholder="~/.subtitle_translator/uploads" />
                   </Form.Item>
-                  <Form.Item label="端口" name={["ui", "port"]}>
-                    <InputNumber min={1} max={65535} style={{ width: 120 }} />
-                  </Form.Item>
-                </Space>
+                </>
               ),
             },
           ]}

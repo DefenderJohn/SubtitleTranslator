@@ -32,6 +32,7 @@ export interface TaskSnapshot {
   created_at: number;
   error: string | null;
   progress: TaskEvent | null;
+  artifacts: string[]; // 已存在的导出产物（SRT）路径，可经 /api/download 下载
 }
 
 export interface TaskOptions {
@@ -112,6 +113,13 @@ export interface TranslateConfigPayload {
 export interface UiConfigPayload {
   host: string;
   port: number;
+  upload_dir: string; // 空 = ~/.subtitle_translator/uploads
+}
+
+/** POST /api/upload 响应：批次目录 + 服务器侧文件路径（拿去建任务） */
+export interface UploadResponse {
+  batch: string;
+  paths: string[];
 }
 
 export interface ConfigPayload {
@@ -181,6 +189,41 @@ export const api = {
     request<MediaBrowse>(`/api/media?path=${encodeURIComponent(path)}`),
   videoUrl: (path: string) => `/api/video?path=${encodeURIComponent(path)}`,
 
+  // ---------------------------------------------------------------- 上传与下载
+
+  /** 单文件上传到 /api/upload（XHR 才有上传进度事件）；多文件由调用方逐个调 */
+  uploadFile: (
+    file: File,
+    onProgress?: (percent: number) => void,
+  ): Promise<UploadResponse> =>
+    new Promise((resolve, reject) => {
+      const form = new FormData();
+      form.append("files", file);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/upload");
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100));
+        }
+      };
+      xhr.onload = () => {
+        let body: { detail?: string } & Partial<UploadResponse> = {};
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          // 保留空 body
+        }
+        if (xhr.status >= 200 && xhr.status < 300 && body.paths) {
+          resolve(body as UploadResponse);
+        } else {
+          reject(new ApiError(xhr.status, body.detail ?? `HTTP ${xhr.status}`));
+        }
+      };
+      xhr.onerror = () => reject(new ApiError(0, "网络错误，上传失败"));
+      xhr.send(form);
+    }),
+  downloadUrl: (path: string) => `/api/download?path=${encodeURIComponent(path)}`,
+
   // ---------------------------------------------------------------- 工程数据
 
   getProject: (path: string) =>
@@ -211,7 +254,7 @@ export const api = {
       jsonBody("PATCH", { path, ...body }),
     ),
   exportProject: (path: string, bilingual: boolean) =>
-    request<{ srt_path: string }>(
+    request<{ srt_path: string; download_url: string }>(
       "/api/project/export",
       jsonBody("POST", { path, bilingual }),
     ),

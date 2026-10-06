@@ -10,7 +10,11 @@ import {
   Typography,
   message,
 } from "antd";
-import { ArrowLeftOutlined, ExportOutlined } from "@ant-design/icons";
+import {
+  ArrowLeftOutlined,
+  DownloadOutlined,
+  ExportOutlined,
+} from "@ant-design/icons";
 import { Link, useParams } from "react-router-dom";
 import {
   api,
@@ -97,6 +101,10 @@ export default function TaskDetailPage() {
 
   const projectPath = task.media[0] ?? task.path;
   const tag = STATUS_TAG[task.status];
+  // 下载列表：pipeline 导出的产物（快照 artifacts）+ 本次手动导出的结果
+  const downloadPaths = Array.from(
+    new Set([...(task.artifacts ?? []), ...(srtPath ? [srtPath] : [])]),
+  );
 
   return (
     <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -120,7 +128,7 @@ export default function TaskDetailPage() {
             <Alert type="error" message={task.error} style={{ marginTop: 8 }} />
           )}
           {task.status === "done" && (
-            <Space style={{ marginTop: 8 }}>
+            <Space style={{ marginTop: 8 }} wrap>
               <Button
                 type="primary"
                 icon={<ExportOutlined />}
@@ -129,6 +137,15 @@ export default function TaskDetailPage() {
               >
                 导出 SRT
               </Button>
+              {downloadPaths.map((p) => (
+                <Button
+                  key={p}
+                  icon={<DownloadOutlined />}
+                  href={api.downloadUrl(p)}
+                >
+                  下载 {basename(p)}
+                </Button>
+              ))}
               {srtPath && (
                 <Typography.Text type="success" copyable>
                   结果：{srtPath}

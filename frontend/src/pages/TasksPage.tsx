@@ -1,4 +1,4 @@
-/** 任务页（默认页）：新建任务 + 任务列表（SSE 实时进度）。 */
+/** 任务页（默认页）：新建任务（服务器路径 / 浏览器上传两种模式）+ 任务列表（SSE 实时进度）。 */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Button,
@@ -7,14 +7,21 @@ import {
   Input,
   Popconfirm,
   Progress,
+  Segmented,
   Space,
   Switch,
   Table,
   Tag,
   Typography,
+  Upload,
   message,
 } from "antd";
-import { FolderOpenOutlined, ReloadOutlined } from "@ant-design/icons";
+import type { UploadFile, UploadProps } from "antd";
+import {
+  FolderOpenOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+} from "@ant-design/icons";
 import { Link } from "react-router-dom";
 import {
   api,
@@ -36,6 +43,18 @@ export const STATUS_TAG: Record<TaskStatus, { color: string; label: string }> = 
 
 const ACTIVE_STATES: TaskStatus[] = ["pending", "running", "waiting_confirm"];
 
+// 与后端 MEDIA_EXTENSIONS 对齐（文件选择器过滤用；真正校验在服务端）
+const MEDIA_ACCEPT =
+  ".flac,.m4a,.mp3,.mp4,.mpeg,.mpga,.oga,.ogg,.wav,.webm,.mkv,.mov,.avi,.m4v";
+
+type SourceMode = "path" | "upload";
+
+/** 上传成功的文件：uid（antd Upload）→ 服务器侧路径 */
+interface UploadedFile {
+  uid: string;
+  path: string;
+}
+
 interface FormValues {
   path: string;
   auto_confirm: boolean;
@@ -49,6 +68,9 @@ export default function TasksPage() {
   const [loading, setLoading] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [mode, setMode] = useState<SourceMode>("path");
+  const [fileList, setFileList] = useState<UploadFile[]>([]);
+  const [uploaded, setUploaded] = useState<UploadedFile[]>([]);
   const [form] = Form.useForm<FormValues>();
   // taskId -> EventSource，组件卸载时统一关闭
   const sourcesRef = useRef<Map<string, EventSource>>(new Map());
@@ -110,19 +132,56 @@ export default function TasksPage() {
     syncSubscriptions(tasks);
   }, [tasks, syncSubscriptions]);
 
+  /** 直传 /api/upload（自定义请求，逐文件显示进度），成功后记下服务器侧路径 */
+  const uploadRequest: UploadProps["customRequest"] = async (options) => {
+    const { file, onProgress, onSuccess, onError } = options;
+    const uploadFile = file as UploadFile;
+    try {
+      const resp = await api.uploadFile(file as File, (percent) =>
+        onProgress?.({ percent }),
+      );
+      setUploaded((prev) => [
+        ...prev,
+        { uid: uploadFile.uid, path: resp.paths[0] },
+      ]);
+      onSuccess?.(resp);
+    } catch (err) {
+      message.error(`上传失败：${(err as Error).message}`);
+      onError?.(err as Error);
+    }
+  };
+
   const createTask = async (values: FormValues) => {
+    // 上传模式：每个已上传文件一个任务；路径模式：单路径（文件或目录）
+    const paths =
+      mode === "upload" ? uploaded.map((u) => u.path) : [values.path.trim()];
+    if (!paths.length || !paths[0]) {
+      message.warning(
+        mode === "upload" ? "请先上传文件" : "请输入路径或点浏览选择",
+      );
+      return;
+    }
     setSubmitting(true);
     try {
-      const task = await api.createTask(values.path, {
-        auto_confirm: values.auto_confirm,
-        bilingual: values.bilingual,
-        transcribe_only: values.transcribe_only,
-        language: values.language?.trim() || null,
-      });
-      message.success(`任务已创建：${basename(values.path)}`);
+      const created: TaskSnapshot[] = [];
+      for (const path of paths) {
+        created.push(
+          await api.createTask(path, {
+            auto_confirm: values.auto_confirm,
+            bilingual: values.bilingual,
+            transcribe_only: values.transcribe_only,
+            language: values.language?.trim() || null,
+          }),
+        );
+      }
+      message.success(
+        `已创建 ${created.length} 个任务：${paths.map(basename).join("、")}`,
+      );
       form.resetFields();
-      setTasks((prev) => [...prev, task]);
-      syncSubscriptions([...tasks, task]);
+      setFileList([]);
+      setUploaded([]);
+      setTasks((prev) => [...prev, ...created]);
+      syncSubscriptions([...tasks, ...created]);
     } catch (err) {
       message.error(`创建任务失败：${(err as Error).message}`);
     } finally {
@@ -155,21 +214,61 @@ export default function TasksPage() {
           }}
           onFinish={createTask}
         >
-          <Form.Item
-            label="媒体文件或目录路径"
-            name="path"
-            rules={[{ required: true, message: "请输入路径或点浏览选择" }]}
-          >
-            <Space.Compact style={{ width: "100%" }}>
-              <Input placeholder="/path/to/movie.mp4 或目录" />
-              <Button
-                icon={<FolderOpenOutlined />}
-                onClick={() => setBrowserOpen(true)}
-              >
-                浏览
-              </Button>
-            </Space.Compact>
+          <Form.Item label="媒体来源">
+            <Segmented<SourceMode>
+              value={mode}
+              onChange={setMode}
+              options={[
+                { label: "服务器路径", value: "path" },
+                { label: "上传文件", value: "upload" },
+              ]}
+            />
           </Form.Item>
+          {mode === "path" ? (
+            <Form.Item
+              label="媒体文件或目录路径"
+              name="path"
+              rules={[{ required: true, message: "请输入路径或点浏览选择" }]}
+            >
+              <Space.Compact style={{ width: "100%" }}>
+                <Input placeholder="/path/to/movie.mp4 或目录" />
+                <Button
+                  icon={<FolderOpenOutlined />}
+                  onClick={() => setBrowserOpen(true)}
+                >
+                  浏览
+                </Button>
+              </Space.Compact>
+            </Form.Item>
+          ) : (
+            <Form.Item
+              label="上传本地文件"
+              extra={
+                uploaded.length > 0
+                  ? `已上传 ${uploaded.length} 个文件，提交后每个文件创建一个任务`
+                  : undefined
+              }
+            >
+              <Upload.Dragger
+                multiple
+                accept={MEDIA_ACCEPT}
+                customRequest={uploadRequest}
+                fileList={fileList}
+                onChange={({ fileList }) => setFileList(fileList)}
+                onRemove={(file) => {
+                  setUploaded((prev) => prev.filter((u) => u.uid !== file.uid));
+                }}
+              >
+                <p className="ant-upload-drag-icon">
+                  <InboxOutlined />
+                </p>
+                <p className="ant-upload-text">点击或拖拽文件到此区域上传</p>
+                <p className="ant-upload-hint">
+                  支持常见音视频格式（mp4 / mkv / mp3 / ogg 等），可多选；上传完成后在下方选选项并创建任务
+                </p>
+              </Upload.Dragger>
+            </Form.Item>
+          )}
           <Space size="large" wrap>
             <Form.Item
               label="自动确认术语表"
